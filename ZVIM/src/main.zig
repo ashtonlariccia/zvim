@@ -29,7 +29,6 @@ pub fn main() !void {
     var term = try Terminal.init();
     defer term.deinit();
 
-    // Ownership of buf moves into the editor (freed there, even on error).
     const buf = try Buffer.load(alloc, if (is_dir) "" else arg);
     var ed = try Editor.init(alloc, &term, buf);
     defer ed.deinit();

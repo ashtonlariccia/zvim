@@ -18,8 +18,6 @@ pub const Key = union(enum) {
     pub const Wheel = struct { x: u16, y: u16, up: bool };
 };
 
-/// SIGWINCH handler writes a byte here; readKey polls it alongside stdin
-/// so a terminal resize interrupts the blocking wait and re-renders.
 var winch_fds: [2]std.posix.fd_t = .{ -1, -1 };
 
 fn onWinch(_: c_int) callconv(.C) void {
@@ -99,7 +97,6 @@ pub const Terminal = struct {
                     else => .{ .char = b[0] },
                 };
             }
-            // Bare Esc unless more bytes follow immediately (an escape sequence).
             if (!self.inputPending()) return .esc;
             if (try self.stdin.read(&b) != 1 or b[0] != '[') return .esc;
             if (try self.stdin.read(&b) != 1) return .esc;
@@ -119,8 +116,6 @@ pub const Terminal = struct {
         }
     }
 
-    /// Parse the tail of an SGR mouse report: "btn;x;y" then 'M' (press/drag)
-    /// or 'm' (release). Returns null for events we ignore.
     fn readMouse(self: *Terminal) !?Key {
         var buf: [24]u8 = undefined;
         var n: usize = 0;

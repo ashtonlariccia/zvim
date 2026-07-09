@@ -14,7 +14,6 @@ pub const Buffer = struct {
         };
         errdefer self.deinit();
 
-        // Empty path: unnamed scratch buffer (e.g. zvim opened on a directory).
         if (path.len == 0) {
             try self.lines.append(std.ArrayList(u8).init(alloc));
             return self;
@@ -36,7 +35,6 @@ pub const Buffer = struct {
             try line.appendSlice(chunk);
             try self.lines.append(line);
         }
-        // A trailing newline yields one empty final chunk; it is not a line.
         if (self.lines.items.len > 1 and self.lines.items[self.lines.items.len - 1].items.len == 0) {
             self.lines.items[self.lines.items.len - 1].deinit();
             _ = self.lines.pop();
@@ -78,7 +76,6 @@ pub const Buffer = struct {
         return out;
     }
 
-    /// Takes ownership of new_lines; frees the current lines.
     pub fn setLines(self: *Buffer, new_lines: std.ArrayList(std.ArrayList(u8))) void {
         for (self.lines.items) |*line| line.deinit();
         self.lines.deinit();

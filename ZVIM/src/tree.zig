@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub const Entry = struct {
-    path: []u8, // relative to root
+    path: []u8,
     depth: u16,
     is_dir: bool,
     expanded: bool = false,
@@ -11,8 +11,6 @@ pub const Entry = struct {
     }
 };
 
-/// A flattened view of the directory: entries appear in render order,
-/// children of an expanded directory directly after it at depth + 1.
 pub const Tree = struct {
     alloc: std.mem.Allocator,
     root: []u8,
@@ -35,7 +33,6 @@ pub const Tree = struct {
         self.alloc.free(self.root);
     }
 
-    /// Expand or collapse the directory at idx.
     pub fn toggle(self: *Tree, idx: usize) !void {
         if (!self.entries.items[idx].is_dir) return;
         const depth = self.entries.items[idx].depth;
@@ -53,7 +50,6 @@ pub const Tree = struct {
         }
     }
 
-    /// Replace the root; on failure the old tree is left intact.
     pub fn reroot(self: *Tree, root: []const u8) !void {
         const nt = try Tree.init(self.alloc, root);
         self.deinit();
@@ -64,8 +60,6 @@ pub const Tree = struct {
         return std.fs.path.join(self.alloc, &.{ self.root, self.entries.items[idx].path });
     }
 
-    /// Scan root/rel and insert its entries (sorted dirs-first, dotfiles
-    /// hidden) at index `at`.
     fn scanInto(self: *Tree, rel: []const u8, at: usize, depth: u16) !usize {
         const full = try std.fs.path.join(self.alloc, &.{ self.root, rel });
         defer self.alloc.free(full);
