@@ -26,4 +26,5 @@ pub fn main(init: std.process.Init) !void {
 test {
     _ = @import("ui.zig");
     _ = @import("term.zig");
+    _ = @import("Buffer.zig");
 }

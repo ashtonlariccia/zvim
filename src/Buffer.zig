@@ -1,0 +1,274 @@
+//! Text buffer as a piece table.
+//!
+//! The text is never edited in place. `original` holds the text the buffer was
+//! created with and is never modified; inserted text is appended to `add`. The
+//! document is the concatenation of `pieces`, each a span of one of the two.
+//! Pieces are a flat list for now: finding a position is linear in the number
+//! of edits, not the size of the text.
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
+
+const Buffer = @This();
+
+gpa: Allocator,
+original: []const u8,
+add: std.ArrayList(u8) = .empty,
+pieces: std.ArrayList(Piece) = .empty,
+len: usize,
+
+const Piece = struct {
+    src: enum { original, add },
+    start: usize,
+    len: usize,
+};
+
+/// Creates a buffer holding a copy of `text`.
+pub fn init(gpa: Allocator, text: []const u8) !Buffer {
+    const original = try gpa.dupe(u8, text);
+    errdefer gpa.free(original);
+    var self: Buffer = .{ .gpa = gpa, .original = original, .len = text.len };
+    if (text.len > 0) try self.pieces.append(gpa, .{ .src = .original, .start = 0, .len = text.len });
+    return self;
+}
+
+pub fn deinit(self: *Buffer) void {
+    self.gpa.free(self.original);
+    self.add.deinit(self.gpa);
+    self.pieces.deinit(self.gpa);
+    self.* = undefined;
+}
+
+/// Inserts `bytes` so that they start at byte offset `pos`.
+pub fn insert(self: *Buffer, pos: usize, bytes: []const u8) !void {
+    assert(pos <= self.len);
+    if (bytes.len == 0) return;
+
+    const add_start = self.add.items.len;
+    try self.add.appendSlice(self.gpa, bytes);
+    errdefer self.add.shrinkRetainingCapacity(add_start);
+
+    const loc = self.locate(pos);
+    const new: Piece = .{ .src = .add, .start = add_start, .len = bytes.len };
+    if (loc.offset == 0) {
+        // Typing appends to the add buffer right after the previous insert,
+        // so a run of keystrokes grows one piece instead of making many.
+        if (loc.index > 0) {
+            const prev = &self.pieces.items[loc.index - 1];
+            if (prev.src == .add and prev.start + prev.len == add_start) {
+                prev.len += bytes.len;
+                self.len += bytes.len;
+                return;
+            }
+        }
+        try self.pieces.insert(self.gpa, loc.index, new);
+    } else {
+        const p = self.pieces.items[loc.index];
+        const left: Piece = .{ .src = p.src, .start = p.start, .len = loc.offset };
+        const right: Piece = .{ .src = p.src, .start = p.start + loc.offset, .len = p.len - loc.offset };
+        try self.pieces.replaceRange(self.gpa, loc.index, 1, &.{ left, new, right });
+    }
+    self.len += bytes.len;
+}
+
+/// Removes `n` bytes starting at byte offset `pos`.
+pub fn delete(self: *Buffer, pos: usize, n: usize) !void {
+    assert(pos + n <= self.len);
+    if (n == 0) return;
+
+    const first = self.locate(pos);
+    const last = self.locate(pos + n);
+
+    // Whatever survives of the first and last pieces replaces everything between.
+    var keep: [2]Piece = undefined;
+    var kept: usize = 0;
+    if (first.offset > 0) {
+        const p = self.pieces.items[first.index];
+        keep[kept] = .{ .src = p.src, .start = p.start, .len = first.offset };
+        kept += 1;
+    }
+    var end = last.index;
+    if (last.offset > 0) {
+        const p = self.pieces.items[last.index];
+        keep[kept] = .{ .src = p.src, .start = p.start + last.offset, .len = p.len - last.offset };
+        kept += 1;
+        end += 1;
+    }
+    try self.pieces.replaceRange(self.gpa, first.index, end - first.index, keep[0..kept]);
+    self.len -= n;
+}
+
+/// Iterates over the text as a sequence of contiguous byte slices.
+pub fn chunks(self: *const Buffer) ChunkIterator {
+    return .{ .buffer = self };
+}
+
+pub const ChunkIterator = struct {
+    buffer: *const Buffer,
+    index: usize = 0,
+
+    pub fn next(it: *ChunkIterator) ?[]const u8 {
+        if (it.index >= it.buffer.pieces.items.len) return null;
+        const p = it.buffer.pieces.items[it.index];
+        it.index += 1;
+        return it.buffer.pieceBytes(p);
+    }
+};
+
+/// Returns the whole text as a newly allocated slice owned by the caller.
+pub fn toOwnedSlice(self: *const Buffer, gpa: Allocator) ![]u8 {
+    const out = try gpa.alloc(u8, self.len);
+    var i: usize = 0;
+    var it = self.chunks();
+    while (it.next()) |chunk| {
+        @memcpy(out[i..][0..chunk.len], chunk);
+        i += chunk.len;
+    }
+    return out;
+}
+
+fn pieceBytes(self: *const Buffer, p: Piece) []const u8 {
+    const src = switch (p.src) {
+        .original => self.original,
+        .add => self.add.items,
+    };
+    return src[p.start..][0..p.len];
+}
+
+const Location = struct { index: usize, offset: usize };
+
+/// Finds the piece containing byte `pos`. A position on a piece boundary
+/// belongs to the later piece (offset 0); the end of the text is one past
+/// the last piece.
+fn locate(self: *const Buffer, pos: usize) Location {
+    var start: usize = 0;
+    for (self.pieces.items, 0..) |p, i| {
+        if (pos < start + p.len) return .{ .index = i, .offset = pos - start };
+        start += p.len;
+    }
+    return .{ .index = self.pieces.items.len, .offset = 0 };
+}
+
+const testing = std.testing;
+
+fn expectText(b: *const Buffer, expected: []const u8) !void {
+    const got = try b.toOwnedSlice(testing.allocator);
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings(expected, got);
+    try testing.expectEqual(expected.len, b.len);
+}
+
+test "starts with the given text" {
+    var b: Buffer = try .init(testing.allocator, "hello");
+    defer b.deinit();
+    try expectText(&b, "hello");
+}
+
+test "empty buffer" {
+    var b: Buffer = try .init(testing.allocator, "");
+    defer b.deinit();
+    try expectText(&b, "");
+    try b.insert(0, "abc");
+    try expectText(&b, "abc");
+    try b.delete(0, 3);
+    try expectText(&b, "");
+}
+
+test "insert at start, middle and end" {
+    var b: Buffer = try .init(testing.allocator, "ace");
+    defer b.deinit();
+    try b.insert(1, "b");
+    try b.insert(3, "d");
+    try b.insert(0, ">");
+    try b.insert(6, "<");
+    try expectText(&b, ">abcde<");
+}
+
+test "consecutive typing grows a single piece" {
+    var b: Buffer = try .init(testing.allocator, "ab");
+    defer b.deinit();
+    try b.insert(1, "x");
+    try b.insert(2, "y");
+    try b.insert(3, "z");
+    try expectText(&b, "axyzb");
+    try testing.expectEqual(@as(usize, 3), b.pieces.items.len);
+}
+
+test "delete within one piece and across pieces" {
+    var b: Buffer = try .init(testing.allocator, "hello world");
+    defer b.deinit();
+    try b.delete(1, 3); // "ho world"
+    try expectText(&b, "ho world");
+    try b.insert(2, "XYZ"); // "hoXYZ world"
+    try b.delete(1, 6); // removes "oXYZ w"
+    try expectText(&b, "horld");
+    try b.delete(0, 5);
+    try expectText(&b, "");
+    try testing.expectEqual(@as(usize, 0), b.pieces.items.len);
+}
+
+test "matches a plain array under seeded random edits" {
+    const gpa = testing.allocator;
+    for (0..200) |seed| {
+        var prng: std.Random.DefaultPrng = .init(seed);
+        const rand = prng.random();
+
+        var reference: std.ArrayList(u8) = .empty;
+        defer reference.deinit(gpa);
+        try reference.appendSlice(gpa, "the quick brown fox\njumps over\n\nthe lazy dog");
+
+        var b: Buffer = try .init(gpa, reference.items);
+        defer b.deinit();
+
+        for (0..100) |_| {
+            const pos = rand.uintAtMost(usize, reference.items.len);
+            if (rand.boolean()) {
+                var text: [8]u8 = undefined;
+                const n = rand.uintAtMost(usize, text.len);
+                for (text[0..n]) |*c| c.* = "ab\n"[rand.uintLessThan(usize, 3)];
+                try b.insert(pos, text[0..n]);
+                try reference.insertSlice(gpa, pos, text[0..n]);
+            } else {
+                const n = rand.uintAtMost(usize, reference.items.len - pos);
+                try b.delete(pos, n);
+                reference.replaceRangeAssumeCapacity(pos, n, &.{});
+            }
+            try expectText(&b, reference.items);
+        }
+    }
+}
+
+test "matches a plain array under fuzzed edits" {
+    try testing.fuzz({}, fuzzEdits, .{});
+}
+
+fn fuzzEdits(_: void, smith: *testing.Smith) !void {
+    const gpa = testing.allocator;
+    var reference: std.ArrayList(u8) = .empty;
+    defer reference.deinit(gpa);
+    try reference.appendSlice(gpa, "the quick brown fox");
+
+    var b: Buffer = try .init(gpa, reference.items);
+    defer b.deinit();
+
+    while (!smith.eos()) {
+        switch (smith.value(enum { insert, delete })) {
+            .insert => {
+                var text: [8]u8 = undefined;
+                const n = smith.valueRangeAtMost(u32, 0, text.len);
+                smith.bytes(text[0..n]);
+                const pos = smith.valueRangeAtMost(u32, 0, @intCast(reference.items.len));
+                try b.insert(pos, text[0..n]);
+                try reference.insertSlice(gpa, pos, text[0..n]);
+            },
+            .delete => {
+                const pos = smith.valueRangeAtMost(u32, 0, @intCast(reference.items.len));
+                const n = smith.valueRangeAtMost(u32, 0, @intCast(reference.items.len - pos));
+                try b.delete(pos, n);
+                reference.replaceRangeAssumeCapacity(pos, n, &.{});
+            },
+        }
+        try expectText(&b, reference.items);
+    }
+}
