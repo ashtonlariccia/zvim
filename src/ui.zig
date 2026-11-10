@@ -157,7 +157,7 @@ pub fn draw(w: *std.Io.Writer, size: Size, view: View) !void {
             if (message.is_error) try w.writeAll(reset);
             if (used < cols) try w.writeAll("\x1b[K");
         } else {
-            try drawStatus(w, size, view, lines);
+            try drawStatus(w, size, view);
         }
     }
 
@@ -179,15 +179,15 @@ pub fn textRows(size: Size) usize {
 /// File name and mode on the left, dimensions and cursor position on the
 /// right, in reverse video across the whole row. When space is short the
 /// right side shrinks first; the left side goes only if even that won't fit.
-fn drawStatus(w: *std.Io.Writer, size: Size, view: View, lines: usize) !void {
+fn drawStatus(w: *std.Io.Writer, size: Size, view: View) !void {
     const cols: usize = size.cols;
 
     // The right side shrinks in stages until it fits.
     var bufs: [3][96]u8 = undefined;
     const stages = [_][]const u8{
-        try std.fmt.bufPrint(&bufs[0], "{d}x{d}  Ln {d}/{d}  Col {d}", .{ size.cols, size.rows, view.cursor.line + 1, lines, view.cursor.col + 1 }),
-        try std.fmt.bufPrint(&bufs[1], "Ln {d}/{d}  Col {d}", .{ view.cursor.line + 1, lines, view.cursor.col + 1 }),
-        try std.fmt.bufPrint(&bufs[2], "Ln {d}/{d}", .{ view.cursor.line + 1, lines }),
+        try std.fmt.bufPrint(&bufs[0], "{d}x{d}  Ln {d}  Col {d}", .{ size.cols, size.rows, view.cursor.line + 1, view.cursor.col + 1 }),
+        try std.fmt.bufPrint(&bufs[1], "Ln {d}  Col {d}", .{ view.cursor.line + 1, view.cursor.col + 1 }),
+        try std.fmt.bufPrint(&bufs[2], "Ln {d}", .{view.cursor.line + 1}),
     };
     var name_buf: [std.Io.Dir.max_path_bytes + 32]u8 = undefined;
     const name = std.fmt.bufPrint(&name_buf, "{s}{s}{s}{s}{s}{s}", .{
@@ -510,7 +510,7 @@ test "empty buffer shows tildes and a status bar" {
         "",
         "~",
         "~",
-        " [new]      32x4  Ln 1/1  Col 1",
+        " [new]        32x4  Ln 1  Col 1",
     });
 }
 
@@ -521,13 +521,13 @@ test "file text, clipped and scrolled" {
         "first",
         "second line that is too long",
         "third",
-        " a.txt      32x4  Ln 1/3  Col 1",
+        " a.txt        32x4  Ln 1  Col 1",
     });
     try expectScreen(4, 32, .{ .buffer = &b, .name = "a.txt", .top = 2, .cursor = .{ .line = 2 } }, .{
         "third",
         "~",
         "~",
-        " a.txt      32x4  Ln 3/3  Col 1",
+        " a.txt        32x4  Ln 3  Col 1",
     });
 }
 
@@ -549,9 +549,9 @@ test "status bar shows the cursor position, unsaved changes and the mode" {
     var b: Buffer = try .init(testing.allocator, "abc\ndef\n");
     defer b.deinit();
     const view: View = .{ .buffer = &b, .name = "f", .top = 0, .cursor = .{ .line = 1, .col = 2 }, .modified = true, .mode = "-- INSERT --" };
-    try expectScreen(3, 42, view, .{ "abc", "def", " f [+]  -- INSERT --  42x3  Ln 2/2  Col 3" });
+    try expectScreen(3, 42, view, .{ "abc", "def", " f [+]  -- INSERT --    42x3  Ln 2  Col 3" });
     // Narrower: the size goes before the name and mode do.
-    try expectScreen(3, 40, view, .{ "abc", "def", " f [+]  -- INSERT --      Ln 2/2  Col 3" });
+    try expectScreen(3, 38, view, .{ "abc", "def", " f [+]  -- INSERT --      Ln 2  Col 3" });
 }
 
 test "command line and messages replace the status bar" {
@@ -618,7 +618,7 @@ test "a selection ending on an empty last line shows its cell" {
 test "a line that exactly fills the row keeps its last character" {
     var b: Buffer = try .init(testing.allocator, "abcdef\nxy");
     defer b.deinit();
-    try expectScreen(3, 6, .{ .buffer = &b, .name = "", .top = 0 }, .{ "abcdef", "xy", "Ln 1/2" });
+    try expectScreen(3, 6, .{ .buffer = &b, .name = "", .top = 0 }, .{ "abcdef", "xy", " Ln 1" });
 }
 
 test "status bar fills the row exactly and drops what doesn't fit" {
@@ -626,15 +626,19 @@ test "status bar fills the row exactly and drops what doesn't fit" {
     defer b.deinit();
     try expectScreen(2, 30, .{ .buffer = &b, .name = "name.txt", .top = 0 }, .{
         "x",
-        " name.txt 30x2  Ln 1/1  Col 1",
+        " name.txt   30x2  Ln 1  Col 1",
     });
     try expectScreen(2, 22, .{ .buffer = &b, .name = "name.txt", .top = 0 }, .{
         "x",
-        " name.txt      Ln 1/1",
+        " name.txt Ln 1  Col 1",
     });
-    try expectScreen(2, 12, .{ .buffer = &b, .name = "name.txt", .top = 0 }, .{
+    try expectScreen(2, 16, .{ .buffer = &b, .name = "name.txt", .top = 0 }, .{
         "x",
-        "     Ln 1/1",
+        " name.txt  Ln 1",
+    });
+    try expectScreen(2, 8, .{ .buffer = &b, .name = "name.txt", .top = 0 }, .{
+        "x",
+        "   Ln 1",
     });
     try expectScreen(2, 3, .{ .buffer = &b, .name = "name.txt", .top = 0 }, .{ "x", "" });
 }
@@ -648,14 +652,14 @@ test "tabs, control characters, invalid bytes and wide characters" {
         "\u{FFFD}\u{FFFD}ok",
         "中文x",
         "e",
-        "     Ln 1/5",
+        " [new] Ln 1",
     });
 }
 
 test "a wide character that would straddle the edge is left out" {
     var b: Buffer = try .init(testing.allocator, "abc中");
     defer b.deinit();
-    try expectScreen(2, 4, .{ .buffer = &b, .name = "", .top = 0 }, .{ "abc", "" });
+    try expectScreen(2, 4, .{ .buffer = &b, .name = "", .top = 0 }, .{ "abc", "Ln 1" });
 }
 
 test "scrolling sideways" {
@@ -666,7 +670,7 @@ test "scrolling sideways" {
         " 字", // 文 is cut by the left edge: its visible half is blank
         "     b", // the tab's remaining columns are blanks
         "rt",
-        "Ln 1/4",
+        " Ln 1",
     });
 }
 
@@ -678,14 +682,14 @@ test "lines longer than any copy buffer show their end" {
     @memcpy(long[long.len - 3 ..], "END");
     var b: Buffer = try .init(gpa, long);
     defer b.deinit();
-    try expectScreen(2, 10, .{ .buffer = &b, .name = "", .top = 0, .left = 9_990 }, .{ "aaaaaaaEND", "   Ln 1/1" });
+    try expectScreen(2, 10, .{ .buffer = &b, .name = "", .top = 0, .left = 9_990 }, .{ "aaaaaaaEND", "     Ln 1" });
 }
 
 test "a character split across two pieces is read whole" {
     var b: Buffer = try .init(testing.allocator, "x\xe4");
     defer b.deinit();
     try b.insert(2, "\xb8\xad!"); // completes 中 across the piece boundary
-    try expectScreen(2, 6, .{ .buffer = &b, .name = "", .top = 0 }, .{ "x中!", "Ln 1/1" });
+    try expectScreen(2, 6, .{ .buffer = &b, .name = "", .top = 0 }, .{ "x中!", " Ln 1" });
 }
 
 /// A terminal that disagrees with zvim: combining marks take a column, emoji
