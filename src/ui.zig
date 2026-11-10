@@ -62,10 +62,8 @@ pub const Numbers = enum {
     none,
     /// Each line's own number.
     absolute,
-    /// Each line's distance from the cursor's line.
+    /// Each line's distance from the cursor's line, which shows its own.
     relative,
-    /// Distances, with the cursor's line showing its own number.
-    both,
 };
 
 /// Screen columns taken by line numbers: room for the largest number (at
@@ -150,12 +148,9 @@ pub fn draw(w: *std.Io.Writer, size: Size, view: View) !void {
         if (line < lines) {
             if (gutter > 0) {
                 const here = line == view.cursor.line;
-                const number = switch (view.numbers) {
-                    .none => unreachable,
-                    .absolute => line + 1,
-                    .relative => if (line > view.cursor.line) line - view.cursor.line else view.cursor.line - line,
-                    .both => if (here) line + 1 else if (line > view.cursor.line) line - view.cursor.line else view.cursor.line - line,
-                };
+                const number = if (view.numbers == .absolute or here)
+                    line + 1
+                else if (line > view.cursor.line) line - view.cursor.line else view.cursor.line - line;
                 if (!here) try w.writeAll(dim);
                 try w.print("{d: >[1]} ", .{ number, gutter - 1 });
                 if (!here) try w.writeAll(reset);
@@ -734,17 +729,14 @@ test "lines longer than any copy buffer show their end" {
     try expectScreen(2, 10, .{ .buffer = &b, .name = "", .top = 0, .left = 9_990 }, .{ "aaaaaaaEND", "     Ln 1" });
 }
 
-test "line numbers: own, relative, or both, in a gutter as wide as needed" {
+test "line numbers: own or relative, in a gutter as wide as needed" {
     var b: Buffer = try .init(testing.allocator, "a\tb\n中x\nthree\n");
     defer b.deinit();
     const view: View = .{ .buffer = &b, .name = "", .top = 0, .cursor = .{ .line = 1, .col = 2 }, .numbers = .absolute };
     try expectScreen(5, 12, view, .{ "  1 a   b", "  2 中x", "  3 three", "~", " [new] Ln 2" });
     var relative = view;
     relative.numbers = .relative;
-    try expectScreen(5, 12, relative, .{ "  1 a   b", "  0 中x", "  1 three", "~", " [new] Ln 2" });
-    var both = view;
-    both.numbers = .both;
-    try expectScreen(5, 12, both, .{ "  1 a   b", "  2 中x", "  1 three", "~", " [new] Ln 2" });
+    try expectScreen(5, 12, relative, .{ "  1 a   b", "  2 中x", "  1 three", "~", " [new] Ln 2" });
 
     // The cursor and any resync after a wide character are moved past it.
     var buf: [4096]u8 = undefined;

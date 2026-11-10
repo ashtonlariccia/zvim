@@ -179,7 +179,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
         }
         const nu = editor.settings.number;
         const rnu = editor.settings.relativenumber;
-        const numbers: ui.Numbers = if (nu and rnu) .both else if (nu) .absolute else if (rnu) .relative else .none;
+        const numbers: ui.Numbers = if (rnu) .relative else if (nu) .absolute else .none;
         try editor.scrollToCursor(ui.textRows(size), ui.textCols(size, numbers, editor.buffer.visibleLineCount()));
         const pos = try editor.cursorPos();
         const selection: ?ui.Selection = if (try editor.selection()) |sel| .{
@@ -322,8 +322,7 @@ fn writeUsage(w: *std.Io.Writer) !void {
     try settings.writeList(w);
     try w.writeAll(
         \\
-        \\  With both number and relativenumber, the cursor's line shows its own
-        \\  number.
+        \\  With relativenumber, the cursor's line shows its own number.
         \\
         \\  They're read at startup from ~/.config/zvim/zvimrc (or
         \\  $XDG_CONFIG_HOME/zvim/zvimrc): set lines, any number of settings

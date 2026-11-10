@@ -24,8 +24,7 @@ pub const Settings = struct {
     shiftwidth: usize = 4,
     /// Line numbers down the left: each line's own...
     number: bool = false,
-    /// ...or its distance from the cursor's line. With both, the cursor's
-    /// line shows its own number and the others their distance.
+    /// ...or its distance from the cursor's line, which shows its own.
     relativenumber: bool = false,
     /// How long a message stays in the bottom row before the status bar
     /// comes back, in milliseconds; 0 keeps it until the next key.
