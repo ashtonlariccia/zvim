@@ -6,7 +6,6 @@ Accents: café, naïve, résumé, combining é
 Wide: 中文字符, 한국어, ｆｕｌｌｗｉｄｔｈ, emoji 😀🚀
 Control characters are shown safely: [] [] []
 A very long line: lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet 
-
 line 10
 line 11
 line 12

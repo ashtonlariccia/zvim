@@ -11,6 +11,7 @@ const Allocator = std.mem.Allocator;
 const Buffer = @import("Buffer.zig");
 const Key = @import("keys.zig").Key;
 const text = @import("text.zig");
+const History = @import("History.zig");
 
 const Editor = @This();
 
@@ -21,8 +22,7 @@ cursor: usize = 0,
 /// Display column that up/down movement aims for, kept across short lines.
 want_col: usize = 0,
 mode: Mode = .normal,
-/// The buffer has changed since it was loaded or last saved.
-modified: bool = false,
+history: History = .{},
 /// First visible line and display column.
 top: usize = 0,
 left: usize = 0,
@@ -63,10 +63,16 @@ pub fn init(gpa: Allocator, buffer: Buffer, name: []const u8) !Editor {
 
 pub fn deinit(self: *Editor) void {
     self.buffer.deinit();
+    self.history.deinit(self.gpa);
     self.line_buf.deinit(self.gpa);
     self.name.deinit(self.gpa);
     self.command.deinit(self.gpa);
     self.* = undefined;
+}
+
+/// Whether the buffer differs from what was loaded or last saved.
+pub fn isModified(self: *const Editor) bool {
+    return self.history.isModified();
 }
 
 /// Shows a message until the next key.
@@ -80,7 +86,7 @@ pub fn setMessage(self: *Editor, is_error: bool, comptime fmt: []const u8, args:
 
 /// Called after a successful `write` action.
 pub fn wrote(self: *Editor, path: []const u8) void {
-    self.modified = false;
+    self.history.markSaved();
     self.setMessage(false, "\"{s}\" {d}L, {d}B written", .{ path, self.buffer.visibleLineCount(), self.buffer.len });
 }
 
@@ -107,12 +113,70 @@ pub fn cursorPos(self: *Editor) !Pos {
 
 pub fn handleKey(self: *Editor, key: Key) !Action {
     self.message.len = 0;
-    switch (self.mode) {
-        .normal => try self.normalKey(key),
-        .insert => try self.insertKey(key),
-        .command => return self.commandKey(key),
+    const action: Action = switch (self.mode) {
+        .normal => blk: {
+            try self.normalKey(key);
+            break :blk .none;
+        },
+        .insert => blk: {
+            try self.insertKey(key);
+            break :blk .none;
+        },
+        .command => try self.commandKey(key),
+    };
+    // Everything since the last commit is one undo step, except that a trip
+    // through insert mode stays open until it ends.
+    if (self.mode != .insert) try self.history.commit(self.gpa);
+    return action;
+}
+
+/// Inserts into the buffer, recording the edit for undo.
+fn insertBytes(self: *Editor, pos: usize, bytes: []const u8) !void {
+    try self.history.record(self.gpa, self.cursor, .insert, pos, bytes);
+    try self.buffer.insert(pos, bytes);
+}
+
+/// Deletes from the buffer, recording the deleted bytes for undo.
+fn deleteBytes(self: *Editor, pos: usize, n: usize) !void {
+    const removed = try self.gpa.alloc(u8, n);
+    defer self.gpa.free(removed);
+    self.buffer.read(pos, removed);
+    try self.history.record(self.gpa, self.cursor, .delete, pos, removed);
+    try self.buffer.delete(pos, n);
+}
+
+fn undo(self: *Editor) !void {
+    try self.history.commit(self.gpa);
+    const group = self.history.undo() orelse {
+        self.setMessage(false, "Already at oldest change", .{});
+        return;
+    };
+    var i = group.edits.len;
+    while (i > 0) {
+        i -= 1;
+        const e = group.edits[i];
+        switch (e.kind) {
+            .insert => try self.buffer.delete(e.pos, e.text.len),
+            .delete => try self.buffer.insert(e.pos, e.text),
+        }
     }
-    return .none;
+    self.cursor = @min(group.cursor, self.buffer.len);
+    try self.clampCursor();
+    self.setMessage(false, "Undid change #{d}", .{group.id});
+}
+
+fn redo(self: *Editor) !void {
+    const group = self.history.redo() orelse {
+        self.setMessage(false, "Already at newest change", .{});
+        return;
+    };
+    for (group.edits) |e| switch (e.kind) {
+        .insert => try self.buffer.insert(e.pos, e.text),
+        .delete => try self.buffer.delete(e.pos, e.text.len),
+    };
+    self.cursor = @min(group.edits[0].pos, self.buffer.len);
+    try self.clampCursor();
+    self.setMessage(false, "Redid change #{d}", .{group.id});
 }
 
 fn commandKey(self: *Editor, key: Key) !Action {
@@ -167,11 +231,11 @@ fn runCommand(self: *Editor) !Action {
         // Like Vim, a file always ends with a newline when written.
         var tail = self.buffer.chunksFrom(self.buffer.len -| 1);
         const last = if (tail.next()) |chunk| chunk[0] else '\n';
-        if (last != '\n') try self.buffer.insert(self.buffer.len, "\n");
+        if (last != '\n') try self.insertBytes(self.buffer.len, "\n");
         return .{ .write = .{ .path = path, .then_quit = write_quit } };
     }
     if (std.mem.eql(u8, cmd, "q") and arg.len == 0) {
-        if (self.modified and !bang) {
+        if (self.isModified() and !bang) {
             self.setMessage(true, "E37: No write since last change (add ! to override)", .{});
             return .none;
         }
@@ -210,6 +274,7 @@ fn normalKey(self: *Editor, key: Key) !void {
                 try self.insertAtCursor("\n");
                 self.mode = .insert;
             },
+            'u' => try self.undo(),
             ':' => {
                 self.mode = .command;
                 self.command.clearRetainingCapacity();
@@ -229,6 +294,7 @@ fn normalKey(self: *Editor, key: Key) !void {
         .home => try self.moveLineStart(),
         .end => try self.moveLineEnd(),
         .delete => try self.deleteUnderCursor(),
+        .ctrl => |c| if (c == 'r') try self.redo(),
         else => {},
     }
 }
@@ -265,10 +331,9 @@ fn insertAtCursor(self: *Editor, bytes: []const u8) !void {
     // At the very end of text without a final newline, a newline would only
     // terminate the last line; a second one makes the new, empty line real.
     const ends_line = self.cursor == self.buffer.len and bytes[bytes.len - 1] == '\n';
-    try self.buffer.insert(self.cursor, bytes);
-    if (ends_line) try self.buffer.insert(self.cursor + bytes.len, "\n");
+    try self.insertBytes(self.cursor, bytes);
+    if (ends_line) try self.insertBytes(self.cursor + bytes.len, "\n");
     self.cursor += bytes.len;
-    self.modified = true;
     try self.updateWantCol();
 }
 
@@ -278,11 +343,10 @@ fn deleteUnderCursor(self: *Editor) !void {
     const pos = try self.cursorPos();
     const s = try self.lineText(pos.line);
     if (pos.byte < s.len) {
-        try self.buffer.delete(self.cursor, nextChar(s, pos.byte) - pos.byte);
+        try self.deleteBytes(self.cursor, nextChar(s, pos.byte) - pos.byte);
     } else if (self.mode == .insert and pos.line + 1 < self.buffer.visibleLineCount()) {
-        try self.buffer.delete(self.cursor, 1);
+        try self.deleteBytes(self.cursor, 1);
     } else return;
-    self.modified = true;
     try self.clampCursor();
 }
 
@@ -294,12 +358,11 @@ fn deleteBeforeCursor(self: *Editor) !void {
         const s = try self.lineText(pos.line);
         const n = pos.byte - prevChar(s, pos.byte);
         self.cursor -= n;
-        try self.buffer.delete(self.cursor, n);
+        try self.deleteBytes(self.cursor, n);
     } else if (pos.line > 0) {
         self.cursor -= 1;
-        try self.buffer.delete(self.cursor, 1);
+        try self.deleteBytes(self.cursor, 1);
     } else return;
-    self.modified = true;
     try self.updateWantCol();
 }
 
@@ -605,7 +668,7 @@ test "i inserts before the cursor; Escape steps back onto the last typed charact
     try typeThenEscape(&e, "ihello ");
     try expectText(&e, "hello world\n");
     try expectCursor(&e, 0, 5);
-    try testing.expect(e.modified);
+    try testing.expect(e.isModified());
     try testing.expectEqual(Mode.normal, e.mode);
 }
 
@@ -735,7 +798,7 @@ test ":w writes to the buffer's name; :w name and :wq" {
     try testing.expectEqualStrings("f.txt", w.write.path);
     try testing.expect(!w.write.then_quit);
     e.wrote(w.write.path);
-    try testing.expect(!e.modified);
+    try testing.expect(!e.isModified());
     try testing.expectEqualStrings("\"f.txt\" 1L, 4B written", e.message.text());
 
     const other = try runTyped(&e, "w  other.txt ");
@@ -781,4 +844,64 @@ test "unknown commands, Escape and Backspace on an empty command line" {
     try testing.expectEqual(Mode.normal, e.mode);
     try typeKeys(&e, "x"); // back in normal mode: deletes a character
     try expectText(&e, "ac\n");
+}
+
+test "u undoes a whole insert session, Ctrl-R redoes it" {
+    var e = try testEditor("world\n");
+    defer e.deinit();
+    try typeThenEscape(&e, "ihello\rthere ");
+    try expectText(&e, "hello\nthere world\n");
+    try typeKeys(&e, "u");
+    try expectText(&e, "world\n");
+    try expectCursor(&e, 0, 0);
+    try testing.expectEqualStrings("Undid change #1", e.message.text());
+    try typeKeys(&e, "u");
+    try testing.expectEqualStrings("Already at oldest change", e.message.text());
+    try typeKeys(&e, "\x12"); // Ctrl-R
+    try expectText(&e, "hello\nthere world\n");
+    try typeKeys(&e, "\x12");
+    try testing.expectEqualStrings("Already at newest change", e.message.text());
+}
+
+test "each x is its own undo step" {
+    var e = try testEditor("abcd\n");
+    defer e.deinit();
+    try typeKeys(&e, "xxx");
+    try expectText(&e, "d\n");
+    try typeKeys(&e, "u");
+    try expectText(&e, "cd\n");
+    try typeKeys(&e, "uu");
+    try expectText(&e, "abcd\n");
+    try testing.expect(!e.isModified());
+}
+
+test "undo back to the saved state clears the modified flag" {
+    var e: Editor = try .init(testing.allocator, try .init(testing.allocator, "a\n"), "f");
+    defer e.deinit();
+    try typeKeys(&e, "x");
+    e.wrote("f");
+    try testing.expect(!e.isModified());
+    try typeKeys(&e, "u");
+    try testing.expect(e.isModified());
+    try typeKeys(&e, "\x12");
+    try testing.expect(!e.isModified());
+}
+
+test "backspace and line joins inside one insert session undo together" {
+    var e = try testEditor("ab\ncd\n");
+    defer e.deinit();
+    try typeThenEscape(&e, "jixy\x7f\x7f\x7f\x7fz");
+    // Two backspaces remove "xy", the third joins the lines, the fourth deletes "b".
+    try expectText(&e, "azcd\n");
+    try typeKeys(&e, "u");
+    try expectText(&e, "ab\ncd\n");
+}
+
+test "o on text without a final newline undoes cleanly" {
+    var e = try testEditor("abc");
+    defer e.deinit();
+    try typeThenEscape(&e, "onew");
+    try expectText(&e, "abc\nnew\n");
+    try typeKeys(&e, "u");
+    try expectText(&e, "abc");
 }

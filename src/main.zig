@@ -38,7 +38,7 @@ pub fn main(init: std.process.Init) !void {
             .cursor = .{ .line = pos.line, .col = pos.col },
             .cursor_shape = if (editor.mode == .insert) .bar else .block,
             .mode = if (editor.mode == .insert) "-- INSERT --" else "",
-            .modified = editor.modified,
+            .modified = editor.isModified(),
             .command = if (editor.mode == .command) editor.command.items else null,
             .message = if (editor.message.len > 0)
                 .{ .text = editor.message.text(), .is_error = editor.message.is_error }
@@ -81,4 +81,5 @@ test {
     _ = @import("file.zig");
     _ = @import("keys.zig");
     _ = @import("Editor.zig");
+    _ = @import("History.zig");
 }

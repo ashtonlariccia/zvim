@@ -192,6 +192,19 @@ pub const ChunkIterator = struct {
     }
 };
 
+/// Copies `out.len` bytes starting at byte offset `pos` into `out`.
+pub fn read(self: *const Buffer, pos: usize, out: []u8) void {
+    assert(pos + out.len <= self.len);
+    var it = self.chunksFrom(pos);
+    var n: usize = 0;
+    while (n < out.len) {
+        const chunk = it.next().?;
+        const take = @min(chunk.len, out.len - n);
+        @memcpy(out[n..][0..take], chunk[0..take]);
+        n += take;
+    }
+}
+
 /// Returns the whole text as a newly allocated slice owned by the caller.
 pub fn toOwnedSlice(self: *const Buffer, gpa: Allocator) ![]u8 {
     const out = try gpa.alloc(u8, self.len);
