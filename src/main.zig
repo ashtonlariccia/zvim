@@ -36,6 +36,9 @@ pub fn main(init: std.process.Init) !void {
             .top = editor.top,
             .left = editor.left,
             .cursor = .{ .line = pos.line, .col = pos.col },
+            .cursor_shape = if (editor.mode == .insert) .bar else .block,
+            .mode = if (editor.mode == .insert) "-- INSERT --" else "",
+            .modified = editor.modified,
         });
         try out.flush();
 
@@ -44,7 +47,7 @@ pub fn main(init: std.process.Init) !void {
             .input => |bytes| {
                 var keys: Decoder = .{ .bytes = bytes };
                 while (keys.next()) |key| {
-                    if (key == .char and key.char == 'q') return;
+                    if (editor.mode == .normal and key == .char and key.char == 'q') return;
                     try editor.handleKey(key);
                 }
             },

@@ -21,6 +21,8 @@ cursor: usize = 0,
 /// Display column that up/down movement aims for, kept across short lines.
 want_col: usize = 0,
 mode: Mode = .normal,
+/// The buffer has changed since it was loaded or last saved.
+modified: bool = false,
 /// First visible line and display column.
 top: usize = 0,
 left: usize = 0,
@@ -56,6 +58,13 @@ pub fn cursorPos(self: *Editor) !Pos {
 }
 
 pub fn handleKey(self: *Editor, key: Key) !void {
+    switch (self.mode) {
+        .normal => try self.normalKey(key),
+        .insert => try self.insertKey(key),
+    }
+}
+
+fn normalKey(self: *Editor, key: Key) !void {
     switch (key) {
         .char => |c| switch (c) {
             'h' => try self.moveLeft(),
@@ -64,7 +73,61 @@ pub fn handleKey(self: *Editor, key: Key) !void {
             'k' => try self.moveVertical(.up),
             '0' => try self.moveLineStart(),
             '$' => try self.moveLineEnd(),
+            'x' => try self.deleteUnderCursor(),
+            'i' => self.mode = .insert,
+            'a' => {
+                self.mode = .insert;
+                try self.moveRight();
+            },
+            'I' => {
+                self.mode = .insert;
+                try self.moveFirstNonBlank();
+            },
+            'A' => {
+                self.mode = .insert;
+                try self.moveLineEnd();
+            },
+            'o' => {
+                const line = self.buffer.lineOf(self.cursor);
+                self.cursor = self.lineEnd(line);
+                try self.insertAtCursor("\n");
+                self.mode = .insert;
+            },
+            'O' => {
+                self.cursor = self.buffer.lineStart(self.buffer.lineOf(self.cursor));
+                try self.insertAtCursor("\n");
+                self.cursor -= 1;
+                self.mode = .insert;
+            },
             else => {},
+        },
+        .left, .backspace => try self.moveLeft(),
+        .right => try self.moveRight(),
+        .down => try self.moveVertical(.down),
+        .up => try self.moveVertical(.up),
+        .home => try self.moveLineStart(),
+        .end => try self.moveLineEnd(),
+        .delete => try self.deleteUnderCursor(),
+        else => {},
+    }
+}
+
+fn insertKey(self: *Editor, key: Key) !void {
+    switch (key) {
+        .char => |c| {
+            var bytes: [4]u8 = undefined;
+            const n = std.unicode.utf8Encode(c, &bytes) catch return;
+            try self.insertAtCursor(bytes[0..n]);
+        },
+        .enter => try self.insertAtCursor("\n"),
+        .tab => try self.insertAtCursor("\t"),
+        .backspace => try self.deleteBeforeCursor(),
+        .delete => try self.deleteUnderCursor(),
+        .escape => {
+            // Like Vim, leaving insert mode steps back onto the last typed character.
+            try self.moveLeft();
+            self.mode = .normal;
+            try self.clampCursor();
         },
         .left => try self.moveLeft(),
         .right => try self.moveRight(),
@@ -74,6 +137,71 @@ pub fn handleKey(self: *Editor, key: Key) !void {
         .end => try self.moveLineEnd(),
         else => {},
     }
+}
+
+/// Inserts `bytes` at the cursor and moves the cursor past them.
+fn insertAtCursor(self: *Editor, bytes: []const u8) !void {
+    // At the very end of text without a final newline, a newline would only
+    // terminate the last line; a second one makes the new, empty line real.
+    const ends_line = self.cursor == self.buffer.len and bytes[bytes.len - 1] == '\n';
+    try self.buffer.insert(self.cursor, bytes);
+    if (ends_line) try self.buffer.insert(self.cursor + bytes.len, "\n");
+    self.cursor += bytes.len;
+    self.modified = true;
+    try self.updateWantCol();
+}
+
+/// Deletes the character under the cursor. In insert mode at the end of a
+/// line, joins the next line onto this one instead.
+fn deleteUnderCursor(self: *Editor) !void {
+    const pos = try self.cursorPos();
+    const s = try self.lineText(pos.line);
+    if (pos.byte < s.len) {
+        try self.buffer.delete(self.cursor, nextChar(s, pos.byte) - pos.byte);
+    } else if (self.mode == .insert and pos.line + 1 < self.buffer.visibleLineCount()) {
+        try self.buffer.delete(self.cursor, 1);
+    } else return;
+    self.modified = true;
+    try self.clampCursor();
+}
+
+/// Deletes the character before the cursor, or at the start of a line joins
+/// it onto the previous one.
+fn deleteBeforeCursor(self: *Editor) !void {
+    const pos = try self.cursorPos();
+    if (pos.byte > 0) {
+        const s = try self.lineText(pos.line);
+        const n = pos.byte - prevChar(s, pos.byte);
+        self.cursor -= n;
+        try self.buffer.delete(self.cursor, n);
+    } else if (pos.line > 0) {
+        self.cursor -= 1;
+        try self.buffer.delete(self.cursor, 1);
+    } else return;
+    self.modified = true;
+    try self.updateWantCol();
+}
+
+/// Keeps the cursor within its line after an edit or mode change.
+fn clampCursor(self: *Editor) !void {
+    const line = self.buffer.lineOf(self.cursor);
+    const start = self.buffer.lineStart(line);
+    const s = try self.lineText(line);
+    self.cursor = start + @min(self.cursor - start, self.maxByte(s));
+    try self.updateWantCol();
+}
+
+fn updateWantCol(self: *Editor) !void {
+    self.want_col = (try self.cursorPos()).col;
+}
+
+fn moveFirstNonBlank(self: *Editor) !void {
+    const line = self.buffer.lineOf(self.cursor);
+    const s = try self.lineText(line);
+    var i: usize = 0;
+    while (i < s.len and (s[i] == ' ' or s[i] == '\t')) i += 1;
+    self.cursor = self.buffer.lineStart(line) + @min(i, self.maxByte(s));
+    try self.updateWantCol();
 }
 
 /// Scrolls the view so the cursor is inside a `rows` by `cols` area.
@@ -335,4 +463,128 @@ test "a wide character at the right edge scrolls fully into view" {
     try typeKeys(&e, "$");
     try e.scrollToCursor(1, 5);
     try testing.expectEqual(@as(usize, 1), e.left); // 中 at columns 4-5
+}
+
+fn expectText(e: *Editor, expected: []const u8) !void {
+    const got = try e.buffer.toOwnedSlice(testing.allocator);
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings(expected, got);
+}
+
+/// Types `input`, then Escape. Escape goes separately because a byte right
+/// after it in the same input would read as an escape sequence.
+fn typeThenEscape(e: *Editor, input: []const u8) !void {
+    try typeKeys(e, input);
+    try e.handleKey(.escape);
+}
+
+test "i inserts before the cursor; Escape steps back onto the last typed character" {
+    var e = try testEditor("world\n");
+    defer e.deinit();
+    try typeThenEscape(&e, "ihello ");
+    try expectText(&e, "hello world\n");
+    try expectCursor(&e, 0, 5);
+    try testing.expect(e.modified);
+    try testing.expectEqual(Mode.normal, e.mode);
+}
+
+test "a appends after the cursor, A at the end of the line, I at the first non-blank" {
+    var e = try testEditor("  ac\n");
+    defer e.deinit();
+    try typeThenEscape(&e, "llab"); // cursor on 'a', append 'b' after it
+    try expectText(&e, "  abc\n");
+    try typeThenEscape(&e, "A!");
+    try expectText(&e, "  abc!\n");
+    try typeThenEscape(&e, "I>");
+    try expectText(&e, "  >abc!\n");
+    try expectCursor(&e, 0, 2);
+}
+
+test "Enter splits the line, Backspace joins it back" {
+    var e = try testEditor("abcd\n");
+    defer e.deinit();
+    try typeKeys(&e, "lli\r");
+    try expectText(&e, "ab\ncd\n");
+    try expectCursor(&e, 1, 0);
+    try typeKeys(&e, "\x7f");
+    try expectText(&e, "abcd\n");
+    try expectCursor(&e, 0, 2);
+    try typeKeys(&e, "\x7f\x7f\x7f"); // a third Backspace at the start of the file does nothing
+    try expectText(&e, "cd\n");
+}
+
+test "o and O open lines below and above" {
+    var e = try testEditor("one\ntwo\n");
+    defer e.deinit();
+    try typeThenEscape(&e, "oone and a half");
+    try expectText(&e, "one\none and a half\ntwo\n");
+    try typeThenEscape(&e, "Gkk"); // (G does nothing yet) move to line 0
+    try typeThenEscape(&e, "Ozero");
+    try expectText(&e, "zero\none\none and a half\ntwo\n");
+    try expectCursor(&e, 0, 3);
+}
+
+test "o on the last line of text without a final newline makes a real line" {
+    var e = try testEditor("abc");
+    defer e.deinit();
+    try typeKeys(&e, "o");
+    try expectCursor(&e, 1, 0);
+    try testing.expectEqual(@as(usize, 2), e.buffer.visibleLineCount());
+    try typeThenEscape(&e, "d");
+    try expectText(&e, "abc\nd\n");
+}
+
+test "typing into an empty buffer and pressing Enter at the end" {
+    var e = try testEditor("");
+    defer e.deinit();
+    try typeKeys(&e, "ihi\rthere");
+    try expectText(&e, "hi\nthere\n");
+    try expectCursor(&e, 1, 5);
+}
+
+test "x deletes the character under the cursor and stays on the line" {
+    var e = try testEditor("abc\n\nz\n");
+    defer e.deinit();
+    try typeKeys(&e, "$x");
+    try expectText(&e, "ab\n\nz\n");
+    try expectCursor(&e, 0, 1); // back onto the new last character
+    try typeKeys(&e, "xxx");
+    try expectText(&e, "\n\nz\n");
+    try typeKeys(&e, "jx"); // nothing to delete on an empty line
+    try expectText(&e, "\n\nz\n");
+}
+
+test "Delete in insert mode joins the next line, but not past the last line" {
+    var e = try testEditor("ab\ncd\n");
+    defer e.deinit();
+    try typeKeys(&e, "A\x1b[3~");
+    try expectText(&e, "abcd\n");
+    // Deletes "c" and "d", then stops: the final newline isn't a line to join.
+    try typeKeys(&e, "\x1b[3~\x1b[3~\x1b[3~");
+    try expectText(&e, "ab\n");
+}
+
+test "multibyte characters are typed and deleted whole" {
+    var e = try testEditor("e\u{301}\n");
+    defer e.deinit();
+    try typeKeys(&e, "x");
+    try expectText(&e, "\n");
+    try typeKeys(&e, "i中é");
+    try expectText(&e, "中é\n");
+    try typeKeys(&e, "\x7f");
+    try expectText(&e, "中\n");
+    try typeKeys(&e, "\t");
+    try expectText(&e, "中\t\n");
+    try testing.expectEqual(@as(usize, 8), (try e.cursorPos()).col);
+}
+
+test "in insert mode the cursor can sit after the last character" {
+    var e = try testEditor("ab\nlonger\n");
+    defer e.deinit();
+    try typeKeys(&e, "jAx");
+    try expectCursor(&e, 1, 7);
+    try typeKeys(&e, "\x1b[A"); // up: past the end of "ab"
+    try expectCursor(&e, 0, 2);
+    try e.handleKey(.escape);
+    try expectCursor(&e, 0, 1);
 }

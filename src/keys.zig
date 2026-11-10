@@ -34,7 +34,7 @@ pub const Decoder = struct {
             const b = rest[0];
             switch (b) {
                 0x1b => {
-                    if (rest.len >= 2 and (rest[1] == '[' or rest[1] == 'O')) {
+                    if (isSequenceStart(rest)) {
                         const seq = sequenceLen(rest);
                         d.i += seq;
                         return sequenceKey(rest[0..seq]) orelse continue;
@@ -68,6 +68,15 @@ pub const Decoder = struct {
             }
         }
         return null;
+    }
+
+    /// ESC [ always starts a sequence. ESC O only does when a key code
+    /// follows; otherwise it is Escape then a typed 'O' (e.g. leaving insert
+    /// mode and opening a line above in quick succession).
+    fn isSequenceStart(s: []const u8) bool {
+        if (s.len < 2) return false;
+        if (s[1] == '[') return true;
+        return s[1] == 'O' and s.len >= 3 and std.mem.indexOfScalar(u8, "ABCDHFPQRS", s[2]) != null;
     }
 
     /// Length of the escape sequence at the start of `s` (which begins ESC [ or ESC O).
@@ -124,6 +133,8 @@ test "lone escape versus escape sequences" {
     try expectKeys("\x1b[A\x1b[B\x1b[C\x1b[D", &.{ .up, .down, .right, .left });
     try expectKeys("\x1bOA\x1b[H\x1b[F\x1b[3~", &.{ .up, .home, .end, .delete });
     try expectKeys("x\x1b", &.{ .{ .char = 'x' }, .escape });
+    try expectKeys("\x1bOx", &.{ .escape, .{ .char = 'O' }, .{ .char = 'x' } });
+    try expectKeys("\x1bO", &.{ .escape, .{ .char = 'O' } });
 }
 
 test "unknown sequences and invalid bytes are dropped" {
