@@ -28,4 +28,5 @@ test {
     _ = @import("term.zig");
     _ = @import("Buffer.zig");
     _ = @import("text.zig");
+    _ = @import("file.zig");
 }

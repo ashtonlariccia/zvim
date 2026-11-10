@@ -34,8 +34,14 @@ const Piece = struct {
 pub fn init(gpa: Allocator, text: []const u8) !Buffer {
     const original = try gpa.dupe(u8, text);
     errdefer gpa.free(original);
+    return initOwned(gpa, original);
+}
+
+/// Creates a buffer that takes ownership of `text`, which must have been
+/// allocated with `gpa`. On error the caller still owns `text`.
+pub fn initOwned(gpa: Allocator, text: []const u8) !Buffer {
     const newlines = countNewlines(text);
-    var self: Buffer = .{ .gpa = gpa, .original = original, .len = text.len, .newlines = newlines };
+    var self: Buffer = .{ .gpa = gpa, .original = text, .len = text.len, .newlines = newlines };
     if (text.len > 0) try self.pieces.append(gpa, .{
         .src = .original,
         .start = 0,
