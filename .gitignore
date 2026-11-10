@@ -1,3 +1,8 @@
 .zig-cache/
 zig-out/
 *.o
+
+# sandbox scratch files
+sandbox/*
+!sandbox/run.sh
+!sandbox/README.md
