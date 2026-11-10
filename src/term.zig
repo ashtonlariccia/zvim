@@ -38,6 +38,7 @@ fn onSignal(sig: posix.SIG) callconv(.c) void {
 
 pub const Terminal = struct {
     original: posix.termios,
+    raw: posix.termios,
 
     pub fn init() !Terminal {
         const original = try posix.tcgetattr(stdin);
@@ -68,7 +69,7 @@ pub const Terminal = struct {
         for (handled_signals) |sig| posix.sigaction(sig, &act, null);
 
         writeAll(enter_seq);
-        return .{ .original = original };
+        return .{ .original = original, .raw = raw };
     }
 
     pub fn deinit(self: *Terminal) void {
@@ -84,6 +85,16 @@ pub const Terminal = struct {
         }
         writeAll(leave_seq);
         posix.tcsetattr(stdin, .FLUSH, self.original) catch {};
+    }
+
+    /// Ctrl-Z: puts the terminal back to normal and stops zvim, as a shell
+    /// job. Returns once it's continued (`fg`), with the terminal set up again.
+    pub fn suspendProcess(self: *Terminal) void {
+        writeAll(leave_seq);
+        posix.tcsetattr(stdin, .FLUSH, self.original) catch {};
+        posix.raise(.TSTP) catch {};
+        posix.tcsetattr(stdin, .FLUSH, self.raw) catch {};
+        writeAll(enter_seq);
     }
 
     pub fn size() Size {

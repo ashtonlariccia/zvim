@@ -127,6 +127,10 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
                 switch (try editor.handleKey(key)) {
                     .none => {},
                     .quit => return .quit,
+                    .@"suspend" => {
+                        term.suspendProcess();
+                        size = Terminal.size();
+                    },
                     .write => |write| {
                         file.save(&editor.buffer, init.io, .cwd(), write.path) catch |err| {
                             editor.writeFailed(write.path, err);

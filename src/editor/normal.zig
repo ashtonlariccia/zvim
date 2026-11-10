@@ -116,6 +116,7 @@ pub fn normalKey(ed: *Editor, key: Key) !void {
                 for (0..n) |_| try ed.redo();
             },
             'v' => try visual.toggleVisual(ed, .block),
+            'z' => ed.suspend_requested = true,
             else => {},
         },
         .char => |c| switch (c) {
@@ -364,4 +365,13 @@ test ". stops replaying when a command fails, and never replays itself" {
     try expectText(&e, "a.k.xb\nxyz\n");
     try typeKeys(&e, "2.");
     try expectText(&e, "a.k.xb\nxyz\n");
+}
+
+test "Ctrl-Z asks the caller to suspend, and isn't what . repeats" {
+    var e = try testEditor("abc\n");
+    defer e.deinit();
+    try typeKeys(&e, "x");
+    try testing.expectEqual(Editor.Action.@"suspend", try e.handleKey(.{ .ctrl = 'z' }));
+    try typeKeys(&e, ".");
+    try expectText(&e, "c\n");
 }

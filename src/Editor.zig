@@ -72,6 +72,8 @@ last_search_forward: bool = true,
 visual_anchor: usize = 0,
 visual_kind: VisualKind = .char,
 dot: Dot = .{},
+/// Ctrl-Z was pressed; `handleKey` returns `.suspend`.
+suspend_requested: bool = false,
 /// The last key's command couldn't run (a motion with nowhere to go, or a
 /// missing f/t target). Ends a `.` replay early.
 failed: bool = false,
@@ -150,6 +152,8 @@ pub const Action = union(enum) {
     quit,
     /// Save the buffer to `path`, then report back with `wrote` or `writeFailed`.
     write: struct { path: []const u8, then_quit: bool },
+    /// Ctrl-Z: stop zvim as a shell job until it's continued.
+    @"suspend",
 };
 
 pub fn init(gpa: Allocator, buffer: Buffer, name: []const u8) !Editor {
@@ -298,6 +302,12 @@ pub fn handleKey(self: *Editor, key: Key) Allocator.Error!Action {
     // Everything since the last commit is one undo step, except that a trip
     // through insert mode stays open until it ends.
     if (self.mode != .insert) try self.history.commit(self.gpa);
+
+    if (self.suspend_requested) {
+        self.suspend_requested = false;
+        self.dot.excluded = true;
+        return .@"suspend";
+    }
 
     // A finished command that changed the text is what `.` repeats.
     if (!self.dot.replaying and self.mode == .normal and self.pending.isEmpty() and
