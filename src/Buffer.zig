@@ -5,6 +5,9 @@
 //! document is the concatenation of `pieces`, each a span of one of the two.
 //! Pieces are a flat list for now: finding a position is linear in the number
 //! of edits, not the size of the text.
+//!
+//! Each piece also records how many newlines it contains, so finding a line
+//! only scans the text of the one piece the line starts in.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -17,19 +20,28 @@ original: []const u8,
 add: std.ArrayList(u8) = .empty,
 pieces: std.ArrayList(Piece) = .empty,
 len: usize,
+/// Total newlines in the text; the line count is one more.
+newlines: usize,
 
 const Piece = struct {
     src: enum { original, add },
     start: usize,
     len: usize,
+    newlines: usize,
 };
 
 /// Creates a buffer holding a copy of `text`.
 pub fn init(gpa: Allocator, text: []const u8) !Buffer {
     const original = try gpa.dupe(u8, text);
     errdefer gpa.free(original);
-    var self: Buffer = .{ .gpa = gpa, .original = original, .len = text.len };
-    if (text.len > 0) try self.pieces.append(gpa, .{ .src = .original, .start = 0, .len = text.len });
+    const newlines = countNewlines(text);
+    var self: Buffer = .{ .gpa = gpa, .original = original, .len = text.len, .newlines = newlines };
+    if (text.len > 0) try self.pieces.append(gpa, .{
+        .src = .original,
+        .start = 0,
+        .len = text.len,
+        .newlines = newlines,
+    });
     return self;
 }
 
@@ -49,27 +61,25 @@ pub fn insert(self: *Buffer, pos: usize, bytes: []const u8) !void {
     try self.add.appendSlice(self.gpa, bytes);
     errdefer self.add.shrinkRetainingCapacity(add_start);
 
+    const newlines = countNewlines(bytes);
     const loc = self.locate(pos);
-    const new: Piece = .{ .src = .add, .start = add_start, .len = bytes.len };
+    const new: Piece = .{ .src = .add, .start = add_start, .len = bytes.len, .newlines = newlines };
     if (loc.offset == 0) {
         // Typing appends to the add buffer right after the previous insert,
         // so a run of keystrokes grows one piece instead of making many.
-        if (loc.index > 0) {
-            const prev = &self.pieces.items[loc.index - 1];
-            if (prev.src == .add and prev.start + prev.len == add_start) {
-                prev.len += bytes.len;
-                self.len += bytes.len;
-                return;
-            }
+        const prev = if (loc.index > 0) &self.pieces.items[loc.index - 1] else null;
+        if (prev != null and prev.?.src == .add and prev.?.start + prev.?.len == add_start) {
+            prev.?.len += bytes.len;
+            prev.?.newlines += newlines;
+        } else {
+            try self.pieces.insert(self.gpa, loc.index, new);
         }
-        try self.pieces.insert(self.gpa, loc.index, new);
     } else {
-        const p = self.pieces.items[loc.index];
-        const left: Piece = .{ .src = p.src, .start = p.start, .len = loc.offset };
-        const right: Piece = .{ .src = p.src, .start = p.start + loc.offset, .len = p.len - loc.offset };
-        try self.pieces.replaceRange(self.gpa, loc.index, 1, &.{ left, new, right });
+        const halves = self.split(self.pieces.items[loc.index], loc.offset);
+        try self.pieces.replaceRange(self.gpa, loc.index, 1, &.{ halves[0], new, halves[1] });
     }
     self.len += bytes.len;
+    self.newlines += newlines;
 }
 
 /// Removes `n` bytes starting at byte offset `pos`.
@@ -84,35 +94,87 @@ pub fn delete(self: *Buffer, pos: usize, n: usize) !void {
     var keep: [2]Piece = undefined;
     var kept: usize = 0;
     if (first.offset > 0) {
-        const p = self.pieces.items[first.index];
-        keep[kept] = .{ .src = p.src, .start = p.start, .len = first.offset };
+        keep[kept] = self.split(self.pieces.items[first.index], first.offset)[0];
         kept += 1;
     }
     var end = last.index;
     if (last.offset > 0) {
-        const p = self.pieces.items[last.index];
-        keep[kept] = .{ .src = p.src, .start = p.start + last.offset, .len = p.len - last.offset };
+        keep[kept] = self.split(self.pieces.items[last.index], last.offset)[1];
         kept += 1;
         end += 1;
     }
+
+    var removed_newlines: usize = 0;
+    for (self.pieces.items[first.index..end]) |p| removed_newlines += p.newlines;
+    for (keep[0..kept]) |p| removed_newlines -= p.newlines;
+
     try self.pieces.replaceRange(self.gpa, first.index, end - first.index, keep[0..kept]);
     self.len -= n;
+    self.newlines -= removed_newlines;
+}
+
+pub fn lineCount(self: *const Buffer) usize {
+    return self.newlines + 1;
+}
+
+/// Byte offset where 0-based `line` starts.
+pub fn lineStart(self: *const Buffer, line: usize) usize {
+    assert(line < self.lineCount());
+    if (line == 0) return 0;
+    // Line N starts right after the Nth newline.
+    var start: usize = 0;
+    var seen: usize = 0;
+    for (self.pieces.items) |p| {
+        if (seen + p.newlines >= line) {
+            const bytes = self.pieceBytes(p);
+            var i: usize = 0;
+            while (true) : (i += 1) {
+                if (bytes[i] != '\n') continue;
+                seen += 1;
+                if (seen == line) return start + i + 1;
+            }
+        }
+        start += p.len;
+        seen += p.newlines;
+    }
+    unreachable;
+}
+
+/// The 0-based line containing byte offset `pos`. The end of the text
+/// belongs to the last line.
+pub fn lineOf(self: *const Buffer, pos: usize) usize {
+    assert(pos <= self.len);
+    const loc = self.locate(pos);
+    var line: usize = 0;
+    for (self.pieces.items[0..loc.index]) |p| line += p.newlines;
+    if (loc.offset > 0) line += countNewlines(self.pieceBytes(self.pieces.items[loc.index])[0..loc.offset]);
+    return line;
 }
 
 /// Iterates over the text as a sequence of contiguous byte slices.
 pub fn chunks(self: *const Buffer) ChunkIterator {
-    return .{ .buffer = self };
+    return self.chunksFrom(0);
+}
+
+/// Like `chunks`, but starting at byte offset `pos`.
+pub fn chunksFrom(self: *const Buffer, pos: usize) ChunkIterator {
+    assert(pos <= self.len);
+    const loc = self.locate(pos);
+    return .{ .buffer = self, .index = loc.index, .offset = loc.offset };
 }
 
 pub const ChunkIterator = struct {
     buffer: *const Buffer,
-    index: usize = 0,
+    index: usize,
+    /// Bytes to skip at the start of the current piece.
+    offset: usize,
 
     pub fn next(it: *ChunkIterator) ?[]const u8 {
         if (it.index >= it.buffer.pieces.items.len) return null;
-        const p = it.buffer.pieces.items[it.index];
+        const bytes = it.buffer.pieceBytes(it.buffer.pieces.items[it.index])[it.offset..];
         it.index += 1;
-        return it.buffer.pieceBytes(p);
+        it.offset = 0;
+        return bytes;
     }
 };
 
@@ -136,6 +198,25 @@ fn pieceBytes(self: *const Buffer, p: Piece) []const u8 {
     return src[p.start..][0..p.len];
 }
 
+/// Splits `p` at `offset` (0 < offset < p.len). Only the shorter half is
+/// scanned for newlines; the other half's count follows from the total.
+fn split(self: *const Buffer, p: Piece, offset: usize) [2]Piece {
+    assert(offset > 0 and offset < p.len);
+    const bytes = self.pieceBytes(p);
+    const left_newlines = if (offset <= p.len / 2)
+        countNewlines(bytes[0..offset])
+    else
+        p.newlines - countNewlines(bytes[offset..]);
+    return .{
+        .{ .src = p.src, .start = p.start, .len = offset, .newlines = left_newlines },
+        .{ .src = p.src, .start = p.start + offset, .len = p.len - offset, .newlines = p.newlines - left_newlines },
+    };
+}
+
+fn countNewlines(bytes: []const u8) usize {
+    return std.mem.countScalar(u8, bytes, '\n');
+}
+
 const Location = struct { index: usize, offset: usize };
 
 /// Finds the piece containing byte `pos`. A position on a piece boundary
@@ -157,6 +238,52 @@ fn expectText(b: *const Buffer, expected: []const u8) !void {
     defer testing.allocator.free(got);
     try testing.expectEqualStrings(expected, got);
     try testing.expectEqual(expected.len, b.len);
+
+    // Line index agrees with a naive scan of the expected text.
+    try testing.expectEqual(countNewlines(expected) + 1, b.lineCount());
+    var line: usize = 0;
+    try testing.expectEqual(@as(usize, 0), b.lineStart(0));
+    for (expected, 0..) |c, pos| {
+        try testing.expectEqual(line, b.lineOf(pos));
+        if (c == '\n') {
+            line += 1;
+            try testing.expectEqual(pos + 1, b.lineStart(line));
+        }
+    }
+    try testing.expectEqual(line, b.lineOf(expected.len));
+
+    // Reading from any position yields the rest of the text.
+    for (0..expected.len + 1) |pos| {
+        var it = b.chunksFrom(pos);
+        var at = pos;
+        while (it.next()) |chunk| {
+            try testing.expectEqualStrings(expected[at..][0..chunk.len], chunk);
+            at += chunk.len;
+        }
+        try testing.expectEqual(expected.len, at);
+    }
+}
+
+test "line index on a simple text" {
+    var b: Buffer = try .init(testing.allocator, "one\ntwo\n\nfour");
+    defer b.deinit();
+    try testing.expectEqual(@as(usize, 4), b.lineCount());
+    try testing.expectEqual(@as(usize, 4), b.lineStart(1));
+    try testing.expectEqual(@as(usize, 8), b.lineStart(2));
+    try testing.expectEqual(@as(usize, 9), b.lineStart(3));
+    try testing.expectEqual(@as(usize, 3), b.lineOf(9));
+    try b.insert(4, "1.5\n");
+    try expectText(&b, "one\n1.5\ntwo\n\nfour");
+    try b.delete(3, 8); // removes "\n1.5\ntwo"
+    try expectText(&b, "one\n\nfour");
+}
+
+test "trailing newline makes an empty last line" {
+    var b: Buffer = try .init(testing.allocator, "a\n");
+    defer b.deinit();
+    try testing.expectEqual(@as(usize, 2), b.lineCount());
+    try testing.expectEqual(@as(usize, 2), b.lineStart(1));
+    try testing.expectEqual(@as(usize, 1), b.lineOf(2));
 }
 
 test "starts with the given text" {
