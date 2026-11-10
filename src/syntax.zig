@@ -156,7 +156,7 @@ pub const Language = struct {
             if (line.len == 0 or line[0] == '"') continue;
             var it = std.mem.tokenizeAny(u8, line, " \t");
             const directive = it.next().?;
-            if (std.mem.eql(u8, directive, "extensions")) {
+            if (std.mem.eql(u8, directive, "extensions") or std.mem.eql(u8, directive, "extension")) {
                 while (it.next()) |ext| try lang.extensions.append(a, std.mem.trimStart(u8, ext, "."));
             } else if (std.mem.eql(u8, directive, "shebang")) {
                 while (it.next()) |name| try lang.shebangs.append(a, name);
@@ -165,10 +165,7 @@ pub const Language = struct {
             } else if (std.mem.eql(u8, directive, "functions")) {
                 lang.functions = true;
             } else if (std.mem.eql(u8, directive, "span")) {
-                const group = groupNamed(it.next() orelse "") orelse {
-                    problem.set(number, "span needs a group: span comment /* */", .{});
-                    continue;
-                };
+                const group = groupOf(it.next(), problem, number, "span comment /* */") orelse continue;
                 var span: Span = .{ .group = group, .open = it.next() orelse {
                     problem.set(number, "span needs what it starts with: span comment //", .{});
                     continue;
@@ -191,10 +188,7 @@ pub const Language = struct {
                 try lang.spans.append(a, span);
             } else if (std.mem.eql(u8, directive, "prefix") or std.mem.eql(u8, directive, "suffix")) {
                 const table = if (directive[0] == 'p') &lang.prefix else &lang.suffix;
-                const group = groupNamed(it.next() orelse "") orelse {
-                    problem.set(number, "{s} needs a group and characters: {s} function @", .{ directive, directive });
-                    continue;
-                };
+                const group = groupOf(it.next(), problem, number, if (directive[0] == 'p') "prefix function @" else "suffix function !") orelse continue;
                 for (it.next() orelse "") |c| {
                     if (c < 128) table[c] = group;
                 }
@@ -224,6 +218,18 @@ pub const Language = struct {
         return false;
     }
 };
+
+/// The group a directive names, or null with the problem described.
+fn groupOf(word: ?[]const u8, problem: *Problem, line: usize, example: []const u8) ?Group {
+    const name = word orelse {
+        problem.set(line, "needs a group: {s}", .{example});
+        return null;
+    };
+    return groupNamed(name) orelse {
+        problem.set(line, "not a group: {s} (comment string number keyword type constant function todo)", .{name});
+        return null;
+    };
+}
 
 fn groupNamed(name: []const u8) ?Group {
     return std.meta.stringToEnum(Group, name);
@@ -461,16 +467,27 @@ test "a language file colours words, spans, numbers and calls" {
 
 test "bad lines are reported, the rest still apply" {
     var problem: Problem = .{};
-    var lang = try Language.parse(testing.allocator, "keyword if\nkeywrd x\nspan\nspan string \" \" twice over\n", &problem);
+    var lang = try Language.parse(testing.allocator, "keyword if\nkeywrd x\nspan\nspan commant /* */\n", &problem);
     defer lang.deinit();
     try testing.expectEqual(@as(usize, 2), problem.line);
     try testing.expectEqualStrings("unknown: keywrd", problem.text());
     try testing.expectEqual(Group.keyword, lang.words.get("if").?);
+    for ([_][2][]const u8{
+        .{ "span", "needs a group: span comment /* */" },
+        .{ "span commant /* */", "not a group: commant (comment string number keyword type constant function todo)" },
+        .{ "suffix", "needs a group: suffix function !" },
+        .{ "span string \" \" twice over", "not a span option: twice" },
+    }) |case| {
+        var p: Problem = .{};
+        var l = try Language.parse(testing.allocator, case[0], &p);
+        l.deinit();
+        try testing.expectEqualStrings(case[1], p.text());
+    }
 }
 
 test "a language is picked by extension or #! line" {
     var problem: Problem = .{};
-    var lang = try Language.parse(testing.allocator, "extensions py\nshebang python3\n", &problem);
+    var lang = try Language.parse(testing.allocator, "extension py\nshebang python3\n", &problem);
     defer lang.deinit();
     try testing.expect(lang.isFor("dir.d/a.py", ""));
     try testing.expect(!lang.isFor("a.pyc", ""));

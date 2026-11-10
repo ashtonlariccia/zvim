@@ -118,20 +118,23 @@ fn loadLanguage(init: std.process.Init, editor: *Editor, path: []const u8) !?syn
     const first_len = @min(editor.lineEnd(0), first_line.len);
     editor.buffer.read(0, first_line[0..first_len]);
 
+    // A problem in any language file is reported (one in this file's
+    // language first): a mistake can be why a language isn't picked.
+    var found: ?syntax.Language = null;
+    errdefer if (found) |*lang| lang.deinit();
+    var report: ?struct { name: []const u8, problem: syntax.Problem } = null;
     for (names.items) |name| {
         const contents = dir.readFileAlloc(init.io, name, arena, .limited(max_settings_bytes)) catch continue;
         var problem: syntax.Problem = .{};
         var lang = try syntax.Language.parse(init.gpa, contents, &problem);
-        if (!lang.isFor(path, first_line[0..first_len])) {
-            lang.deinit();
-            continue;
-        }
-        if (problem.len > 0 and editor.message.len == 0) {
-            editor.setMessage(true, "syntax/{s} line {d}: {s}", .{ name, problem.line, problem.text() });
-        }
-        return .init(init.gpa, lang);
+        const is_for = found == null and lang.isFor(path, first_line[0..first_len]);
+        if (problem.len > 0 and (report == null or is_for)) report = .{ .name = name, .problem = problem };
+        if (is_for) found = lang else lang.deinit();
     }
-    return null;
+    if (report) |r| if (editor.message.len == 0) {
+        editor.setMessage(true, "syntax/{s} line {d}: {s}", .{ r.name, r.problem.line, r.problem.text() });
+    };
+    return if (found) |lang| .init(init.gpa, lang) else null;
 }
 
 /// For zvim -s: writes a settings file listing every setting at its
