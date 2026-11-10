@@ -6,7 +6,6 @@ const Editor = @import("Editor.zig");
 const Decoder = @import("keys.zig").Decoder;
 const crash = @import("crash.zig");
 const settings = @import("editor/settings.zig");
-const help = @import("editor/help.zig");
 const build_options = @import("build_options");
 
 /// On a crash, save unsaved changes and restore the terminal first.
@@ -83,7 +82,7 @@ fn loadSettings(init: std.process.Init, editor: *Editor) void {
         if (err != error.FileNotFound) editor.setMessage(true, "cannot read {s}: {s}", .{ path, @errorName(err) });
         return;
     };
-    settings.load(editor, contents);
+    settings.load(editor, contents) catch {};
 }
 
 /// Whether `path` exists but can't be written by this user.
@@ -130,8 +129,6 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
     crash.install(editor, &term);
     defer crash.uninstall();
     var disk = DiskStamp.of(init.io, editor.name.items);
-    var help_buffer: @import("Buffer.zig") = try .init(init.gpa, help.text);
-    defer help_buffer.deinit();
 
     var out_buf: [16 * 1024]u8 = undefined;
     var out_file: std.Io.File.Writer = .initStreaming(.stdout(), init.io, &out_buf);
@@ -148,53 +145,45 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
             editor.clipboard_pending = false;
             try copyToClipboard(init.gpa, out, editor.clipboard.items);
         }
-        try editor.scrollToCursor(ui.textRows(size), size.cols);
-        if (editor.help) |top| {
-            try ui.draw(out, size, .{
-                .buffer = &help_buffer,
-                .name = help.name,
-                .top = top,
-                .cursor = .{ .line = top, .col = 0 },
-                .message = .{ .text = help.hint, .is_error = false },
-            });
-        } else {
-            const pos = try editor.cursorPos();
-            const selection: ?ui.Selection = if (try editor.selection()) |sel| .{
-                .kind = switch (sel.kind) {
-                    .char => .char,
-                    .line => .line,
-                    .block => .block,
-                },
-                .first_line = sel.first_line,
-                .last_line = sel.last_line,
-                .start_col = sel.start_col,
-                .end_col = sel.end_col,
-            } else null;
-            try ui.draw(out, size, .{
-                .buffer = &editor.buffer,
-                .name = editor.name.items,
-                .top = editor.top,
-                .left = editor.left,
-                .cursor = .{ .line = pos.line, .col = pos.col },
-                .cursor_shape = if (editor.mode == .insert) .bar else .block,
-                .mode = modeLabel(editor),
-                .modified = editor.isModified(),
-                .crlf = editor.crlf,
-                .readonly = editor.readonly,
-                .command = if (editor.mode == .command) editor.command.items else null,
-                .command_prefix = switch (editor.command_kind) {
-                    .ex => ':',
-                    .zvim => '\\',
-                    .search_forward => '/',
-                    .search_backward => '?',
-                },
-                .selection = selection,
-                .message = if (editor.message.len > 0)
-                    .{ .text = editor.message.text(), .is_error = editor.message.is_error }
-                else
-                    null,
-            });
-        }
+        // The help page, while open, is what's on screen.
+        const shown = editor.help orelse editor;
+        try shown.scrollToCursor(ui.textRows(size), size.cols);
+        const pos = try shown.cursorPos();
+        const selection: ?ui.Selection = if (try shown.selection()) |sel| .{
+            .kind = switch (sel.kind) {
+                .char => .char,
+                .line => .line,
+                .block => .block,
+            },
+            .first_line = sel.first_line,
+            .last_line = sel.last_line,
+            .start_col = sel.start_col,
+            .end_col = sel.end_col,
+        } else null;
+        try ui.draw(out, size, .{
+            .buffer = &shown.buffer,
+            .name = shown.name.items,
+            .top = shown.top,
+            .left = shown.left,
+            .cursor = .{ .line = pos.line, .col = pos.col },
+            .cursor_shape = if (shown.mode == .insert) .bar else .block,
+            .mode = modeLabel(shown),
+            .modified = shown.isModified(),
+            .crlf = shown.crlf,
+            .readonly = shown.readonly,
+            .command = if (shown.mode == .command) shown.command.items else null,
+            .command_prefix = switch (shown.command_kind) {
+                .ex => ':',
+                .zvim => '\\',
+                .search_forward => '/',
+                .search_backward => '?',
+            },
+            .selection = selection,
+            .message = if (shown.message.len > 0)
+                .{ .text = shown.message.text(), .is_error = shown.message.is_error }
+            else
+                null,
+        });
         try out.flush();
 
         const event = try term.next(in_buf[pending..], if (pending > 0) key_wait_ms else null);

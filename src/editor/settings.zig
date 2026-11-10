@@ -60,12 +60,12 @@ fn valueOf(ed: *Editor, option: Option) Value {
 
 /// Runs a `\` command line. Returns false, with the reason as the editor's
 /// message, if it couldn't be run.
-pub fn runLine(ed: *Editor, line: []const u8) bool {
+pub fn runLine(ed: *Editor, line: []const u8) !bool {
     var words = std.mem.tokenizeAny(u8, line, " \t");
     const command = words.next() orelse return true;
     if (std.mem.eql(u8, command, "set") or std.mem.eql(u8, command, "se")) return set(ed, words.rest());
     if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "h")) {
-        ed.help = 0;
+        try @import("help.zig").open(ed);
         return true;
     }
     ed.setMessage(true, "Not a zvim command: {s} (try \\help)", .{std.mem.trim(u8, line, " \t")});
@@ -143,7 +143,7 @@ fn showAll(ed: *Editor) void {
 /// Applies a settings file: one `\` command per line (the \ itself is
 /// optional); blank lines and anything from a " on are ignored. A bad line
 /// is skipped; the first one is reported as the editor's message.
-pub fn load(ed: *Editor, contents: []const u8) void {
+pub fn load(ed: *Editor, contents: []const u8) !void {
     var first_error: Editor.Message = .{};
     var lines = std.mem.splitScalar(u8, contents, '\n');
     var number: usize = 0;
@@ -152,7 +152,7 @@ pub fn load(ed: *Editor, contents: []const u8) void {
         var line = std.mem.trim(u8, raw, " \t\r");
         if (line.len > 0 and line[0] == '\\') line = line[1..];
         if (line.len == 0 or line[0] == '"') continue;
-        if (!runLine(ed, line) and first_error.len == 0) {
+        if (!try runLine(ed, line) and first_error.len == 0) {
             const reason = ed.message;
             first_error.set(true, "zvimrc line {d}: {s}", .{ number, reason.text() });
         }
@@ -219,7 +219,7 @@ test "\\set rejects what it doesn't understand; :set is not a command" {
 test "a settings file: set lines, comments, and the first bad line reported" {
     var e = try testEditor("");
     defer e.deinit();
-    load(&e,
+    try load(&e,
         \\" my settings
         \\set expandtab shiftwidth=2 " two spaces
         \\
@@ -229,12 +229,12 @@ test "a settings file: set lines, comments, and the first bad line reported" {
     try testing.expectEqual(@as(usize, 2), e.settings.shiftwidth);
     try testing.expectEqual(@as(usize, 0), e.message.len);
 
-    load(&e, "set noet\r\nset wibble\nq!\nset sw=4\n");
+    try load(&e, "set noet\r\nset wibble\nq!\nset sw=4\n");
     try testing.expectEqualStrings("zvimrc line 2: E518: Unknown option: wibble", e.message.text());
     try testing.expect(!e.settings.expandtab); // the good lines still apply
     try testing.expectEqual(@as(usize, 4), e.settings.shiftwidth);
 
-    load(&e, "w out.txt\n");
+    try load(&e, "w out.txt\n");
     try testing.expectEqualStrings("zvimrc line 1: Not a zvim command: w out.txt (try \\help)", e.message.text());
 }
 

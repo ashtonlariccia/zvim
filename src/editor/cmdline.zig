@@ -37,7 +37,7 @@ pub fn commandKey(ed: *Editor, key: Key) !Editor.Action {
             ed.mode = ed.command_return;
             switch (ed.command_kind) {
                 .ex => return runCommand(ed),
-                .zvim => _ = settings.runLine(ed, ed.command.items),
+                .zvim => _ = try settings.runLine(ed, ed.command.items),
                 .search_forward, .search_backward => try runSearch(ed),
             }
         },

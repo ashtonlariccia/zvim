@@ -1,11 +1,17 @@
-//! `\help`: a page of help shown in place of the text until a key closes it.
+//! `\help`: the help page, shown in place of the text until q or Escape.
+//!
+//! The page is an editor of its own over the help text, one that refuses
+//! changes (`Editor.view_only`): moving, searching, selecting and yanking
+//! all work as usual, and what is yanked lands in the real editor's register.
 
 const std = @import("std");
 const Editor = @import("../Editor.zig");
+const Buffer = @import("../Buffer.zig");
 const Key = @import("../keys.zig").Key;
 
 pub const name = "zvim help";
-pub const hint = "j/k or arrows scroll, g/G top/bottom, any other key closes";
+const hint = "q or Esc closes this page";
+pub const refusal = "The help page can't be changed (q or Esc closes it)";
 
 pub const text =
     \\zvim: a small Vim-like editor
@@ -67,70 +73,106 @@ pub const text =
     \\
 ;
 
-pub const line_count = blk: {
-    @setEvalBranchQuota(text.len * 2);
-    var n: usize = 0;
-    for (text) |c| n += @intFromBool(c == '\n');
-    break :blk n;
-};
-
-/// A key while the help page is open: scroll, or close.
-pub fn key(ed: *Editor, k: Key) void {
-    const top = ed.help.?;
-    const page = @max(ed.view_rows, 2);
-    const last = line_count -| ed.view_rows;
-    const new: usize = switch (k) {
-        .down, .enter => top + 1,
-        .up => top -| 1,
-        .char => |c| switch (c) {
-            'j' => top + 1,
-            'k' => top -| 1,
-            ' ' => top + page - 1,
-            'g' => 0,
-            'G' => last,
-            else => return close(ed),
-        },
-        .ctrl => |c| switch (c) {
-            'd' => top + page / 2,
-            'u' => top -| page / 2,
-            'f' => top + page - 1,
-            'b' => top -| (page - 1),
-            else => return close(ed),
-        },
-        else => return close(ed),
-    };
-    ed.help = @min(new, last);
+pub fn open(ed: *Editor) !void {
+    if (ed.help != null or ed.view_only) return;
+    const gpa = ed.gpa;
+    const page = try gpa.create(Editor);
+    errdefer gpa.destroy(page);
+    var buffer: Buffer = try .init(gpa, text);
+    errdefer buffer.deinit();
+    page.* = try .init(gpa, buffer, name);
+    page.view_only = true;
+    page.readonly = true;
+    page.settings = ed.settings;
+    page.view_rows = ed.view_rows;
+    page.setMessage(false, hint, .{});
+    ed.help = page;
 }
 
-fn close(ed: *Editor) void {
+pub fn close(ed: *Editor) void {
+    const page = ed.help orelse return;
     ed.help = null;
+    page.deinit();
+    ed.gpa.destroy(page);
+}
+
+/// A key while the help page is open: q or Escape in normal mode (and :q)
+/// close it; anything else goes to the page.
+pub fn key(ed: *Editor, k: Key) !Editor.Action {
+    const page = ed.help.?;
+    if (page.mode == .normal and page.pending.isEmpty()) {
+        if (k == .escape or (k == .char and k.char == 'q')) {
+            close(ed);
+            return .none;
+        }
+    }
+    switch (try page.handleKey(k)) {
+        .none => {},
+        .quit => close(ed),
+        .@"suspend" => return .@"suspend",
+        .write, .reload => page.setMessage(true, refusal, .{}),
+    }
+    // Something yanked on the page is for use in the text.
+    if (ed.help != null and page.clipboard_pending) {
+        page.clipboard_pending = false;
+        std.mem.swap(Editor.Register, &ed.register, &page.register);
+        std.mem.swap(std.ArrayList(u8), &ed.clipboard, &page.clipboard);
+        ed.clipboard_pending = true;
+    }
+    return .none;
 }
 
 const testing = std.testing;
 const h = @import("testing.zig");
 
-test "\\help opens the help page; keys scroll it, any other key closes it" {
+test "\\help opens the help page; q, Escape and :q close it" {
     var e = try h.testEditor("abc\n");
     defer e.deinit();
-    e.view_rows = 10;
-    try h.typeKeys(&e, "\\help\r");
-    try testing.expectEqual(@as(?usize, 0), e.help);
-    try h.typeKeys(&e, "jj");
-    try testing.expectEqual(@as(?usize, 2), e.help);
-    try h.typeKeys(&e, "kkk");
-    try testing.expectEqual(@as(?usize, 0), e.help);
-    try h.typeKeys(&e, "G");
-    try testing.expectEqual(@as(?usize, line_count - 10), e.help);
-    try h.typeKeys(&e, "j \x04"); // can't scroll past the end
-    try testing.expectEqual(@as(?usize, line_count - 10), e.help);
-    try h.typeKeys(&e, "g");
-    try testing.expectEqual(@as(?usize, 0), e.help);
-
-    try h.typeKeys(&e, "x"); // closes, and is not run as a command
-    try testing.expectEqual(@as(?usize, null), e.help);
-    try h.expectText(&e, "abc\n");
+    for ([_][]const u8{ "q", "\x1b", ":q\r" }) |closing| {
+        try h.typeKeys(&e, "\\help\r");
+        try testing.expect(e.help != null);
+        try testing.expectEqualStrings(name, e.help.?.name.items);
+        try h.typeKeys(&e, "jjw");
+        try h.expectCursor(e.help.?, 2, 4);
+        try h.expectCursor(&e, 0, 0); // the text underneath is untouched
+        try h.typeKeys(&e, closing);
+        try testing.expect(e.help == null);
+    }
     try h.typeKeys(&e, "x");
     try h.expectText(&e, "bc\n");
+}
+
+test "the help page can be searched, selected and yanked from, into the text" {
+    var e = try h.testEditor("abc\n");
+    defer e.deinit();
+    try h.typeKeys(&e, "\\help\r/THE BASICS\rvey");
+    try testing.expect(e.clipboard_pending);
+    try testing.expectEqualStrings("THE", e.clipboard.items);
+    try h.typeKeys(&e, "v");
+    try h.typeThenEscape(&e, ""); // Escape leaves visual mode first...
+    try testing.expect(e.help != null);
+    try h.typeThenEscape(&e, ""); // ...then closes the page
+    try testing.expect(e.help == null);
+    try h.typeKeys(&e, "P");
+    try h.expectText(&e, "THEabc\n");
+}
+
+test "the help page can't be changed" {
+    var e = try h.testEditor("abc\n");
+    defer e.deinit();
+    try h.typeKeys(&e, "\\help\r");
+    const page = e.help.?;
+    for ([_][]const u8{ "x", "dd", "dw", "i", "A", "o", "cw", "rz", "p", "J", ">>", "u", ".", "vd", "Vc", "\x16jI", "3x", "\\help\r", ":w out\r", ":e!\r" }) |keys| {
+        try h.typeKeys(&e, keys);
+        try testing.expect(page.message.is_error or std.mem.eql(u8, keys, "\\help\r"));
+        try h.typeThenEscape(page, "");
+        try testing.expectEqual(Editor.Mode.normal, page.mode);
+        try h.expectText(page, text);
+        try testing.expect(!page.isModified());
+    }
+    _ = try e.handleKey(.{ .paste = "pasted" });
+    try h.expectText(page, text);
+    try h.expectText(&e, "abc\n");
 }
 
 test "the help page fits in 80 columns" {
