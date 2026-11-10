@@ -17,5 +17,9 @@ git-ignored.
 Current controls (viewing only, no editing yet):
 
 - `j` / `k` scroll down / up
+- `h` / `l` scroll left / right (long lines)
 - `q` quit
 - resize the window to watch the view redraw
+
+The status bar shows the file name, the terminal size, `Ln` (first visible
+line / total lines) and `Col` (first visible column).

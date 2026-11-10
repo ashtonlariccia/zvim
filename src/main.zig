@@ -24,9 +24,11 @@ pub fn main(init: std.process.Init) !void {
 
     var size = Terminal.size();
     var top: usize = 0;
+    var left: usize = 0;
     var in_buf: [256]u8 = undefined;
     while (true) {
-        try ui.draw(out, size, .{ .buffer = &buffer, .name = path, .top = top });
+        const view: ui.View = .{ .buffer = &buffer, .name = path, .top = top, .left = left };
+        try ui.draw(out, size, view);
         try out.flush();
 
         switch (try term.next(&in_buf)) {
@@ -35,6 +37,10 @@ pub fn main(init: std.process.Init) !void {
                 'q' => return,
                 'j' => top = @min(top + 1, buffer.visibleLineCount() - 1),
                 'k' => top -|= 1,
+                'h' => left -|= 1,
+                'l' => if (left < ui.maxLeft(size, .{ .buffer = &buffer, .name = path, .top = top })) {
+                    left += 1;
+                },
                 else => {},
             },
         }
