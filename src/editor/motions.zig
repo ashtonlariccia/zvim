@@ -228,13 +228,10 @@ pub fn motionTarget(ed: *Editor, m: Motion, count: usize, has_count: bool, op: ?
                 return null;
             }
             const forward = ed.last_search_forward != reverse;
-            var pos = ed.cursor;
-            for (0..count) |_| {
-                pos = try cmdline.search(ed, pos, forward) orelse {
-                    ed.setMessage(true, "E486: Pattern not found: {s}", .{ed.last_search.items});
-                    return null;
-                };
-            }
+            const pos = try cmdline.search(ed, ed.cursor, forward, count) orelse {
+                ed.setMessage(true, "E486: Pattern not found: {s}", .{ed.last_search.items});
+                return null;
+            };
             return .{ .pos = pos, .kind = .exclusive };
         },
     }

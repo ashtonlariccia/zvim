@@ -138,10 +138,11 @@ pub fn runSearch(ed: *Editor) !void {
     try motions.doMotion(ed, .{ .search_next = false });
 }
 
-/// Finds the next occurrence of the last search from `from`, wrapping
-/// around the end of the text. With `ignorecase`, ASCII letters match in
-/// either case, unless `smartcase` is on and the pattern has a capital.
-pub fn search(ed: *Editor, from: usize, forward: bool) !?usize {
+/// Finds the `count`th next occurrence of the last search from `from`,
+/// wrapping around the end of the text. With `ignorecase`, ASCII letters
+/// match in either case, unless `smartcase` is on and the pattern has a
+/// capital.
+pub fn search(ed: *Editor, from: usize, forward: bool, count: usize) !?usize {
     const pattern = ed.last_search.items;
     const all = try ed.buffer.toOwnedSlice(ed.gpa);
     defer ed.gpa.free(all);
@@ -149,6 +150,12 @@ pub fn search(ed: *Editor, from: usize, forward: bool) !?usize {
         if (std.ascii.isUpper(c)) break true;
     } else false;
     const fold = ed.settings.ignorecase and !(ed.settings.smartcase and has_capital);
+    var pos = from;
+    for (0..count) |_| pos = searchOnce(ed, all, pattern, fold, pos, forward) orelse return null;
+    return pos;
+}
+
+fn searchOnce(ed: *Editor, all: []const u8, pattern: []const u8, fold: bool, from: usize, forward: bool) ?usize {
     if (forward) {
         if (from + 1 <= all.len) {
             if (indexOfPos(all, from + 1, pattern, fold)) |i| return i;
@@ -178,11 +185,15 @@ fn indexOfPos(all: []const u8, start: usize, pattern: []const u8, fold: bool) ?u
 
 /// The last match that starts before `end`.
 fn lastIndexBefore(all: []const u8, end: usize, pattern: []const u8, fold: bool) ?usize {
-    var i = @min(end, all.len + 1);
+    if (end == 0) return null;
+    // A match starting before `end` ends within this much of the text.
+    const reach = all[0..@min(end - 1 + pattern.len, all.len)];
+    if (!fold) return std.mem.lastIndexOf(u8, reach, pattern);
+    if (pattern.len > reach.len) return null;
+    var i = reach.len - pattern.len + 1;
     while (i > 0) {
         i -= 1;
-        const rest = all[i..];
-        if (if (fold) std.ascii.startsWithIgnoreCase(rest, pattern) else std.mem.startsWith(u8, rest, pattern)) return i;
+        if (std.ascii.eqlIgnoreCase(reach[i..][0..pattern.len], pattern)) return i;
     }
     return null;
 }
@@ -278,6 +289,24 @@ test "search with / and ?, n and N, wrapping around" {
     try typeKeys(&e, "/nope\r");
     try expectCursor(&e, 1, 0);
     try testing.expectEqualStrings("E486: Pattern not found: nope", e.message.text());
+}
+
+test "search backward and with a count, matching case when the pattern has a capital" {
+    var e = try testEditor("Foo foo\nfoo Foo\nFoo\n");
+    defer e.deinit();
+    try typeKeys(&e, "G?Foo\r"); // not "foo": smartcase
+    try expectCursor(&e, 1, 4);
+    try typeKeys(&e, "n");
+    try expectCursor(&e, 0, 0);
+    try typeKeys(&e, "n");
+    try expectCursor(&e, 2, 0);
+    try testing.expectEqualStrings("search hit TOP, continuing at BOTTOM", e.message.text());
+    try typeKeys(&e, "2n");
+    try expectCursor(&e, 0, 0);
+    try typeKeys(&e, "3N"); // forward, wrapping
+    try expectCursor(&e, 0, 0);
+    try typeKeys(&e, "/foo\r2N"); // either case, backward twice from line 0, col 4
+    try expectCursor(&e, 2, 0);
 }
 
 test "search as the motion of an operator" {
