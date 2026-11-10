@@ -44,8 +44,8 @@ pub const Terminal = struct {
         raw.lflag.ICANON = false;
         raw.lflag.IEXTEN = false;
         raw.lflag.ISIG = false;
-        raw.cc[@intFromEnum(posix.V.MIN)] = 1;
-        raw.cc[@intFromEnum(posix.V.TIME)] = 0;
+        raw.cc[@backingInt(posix.V.MIN)] = 1;
+        raw.cc[@backingInt(posix.V.TIME)] = 0;
         try posix.tcsetattr(stdin, .FLUSH, raw);
         errdefer posix.tcsetattr(stdin, .FLUSH, original) catch {};
 

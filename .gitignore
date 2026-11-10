@@ -6,3 +6,4 @@ zig-out/
 sandbox/*
 !sandbox/run.sh
 !sandbox/README.md
+!sandbox/sample.txt

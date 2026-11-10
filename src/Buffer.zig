@@ -123,6 +123,14 @@ pub fn lineCount(self: *const Buffer) usize {
     return self.newlines + 1;
 }
 
+/// The number of lines as an editor shows them: a newline at the very end
+/// terminates the last line instead of starting an empty one. Never 0.
+pub fn visibleLineCount(self: *const Buffer) usize {
+    const last = if (self.pieces.items.len == 0) return 1 else self.pieces.items[self.pieces.items.len - 1];
+    const ends_with_newline = self.pieceBytes(last)[last.len - 1] == '\n';
+    return if (ends_with_newline) self.newlines else self.newlines + 1;
+}
+
 /// Byte offset where 0-based `line` starts.
 pub fn lineStart(self: *const Buffer, line: usize) usize {
     assert(line < self.lineCount());
@@ -290,6 +298,18 @@ test "trailing newline makes an empty last line" {
     try testing.expectEqual(@as(usize, 2), b.lineCount());
     try testing.expectEqual(@as(usize, 2), b.lineStart(1));
     try testing.expectEqual(@as(usize, 1), b.lineOf(2));
+}
+
+test "visible line count ignores a final newline" {
+    const cases = [_]struct { []const u8, usize }{
+        .{ "", 1 },     .{ "\n", 1 },     .{ "a", 1 },     .{ "a\n", 1 },
+        .{ "a\nb", 2 }, .{ "a\nb\n", 2 }, .{ "a\n\n", 2 }, .{ "\n\n", 2 },
+    };
+    for (cases) |case| {
+        var b: Buffer = try .init(testing.allocator, case[0]);
+        defer b.deinit();
+        try testing.expectEqual(case[1], b.visibleLineCount());
+    }
 }
 
 test "starts with the given text" {

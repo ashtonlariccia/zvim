@@ -1,8 +1,20 @@
 const std = @import("std");
 const Terminal = @import("term.zig").Terminal;
 const ui = @import("ui.zig");
+const file = @import("file.zig");
 
 pub fn main(init: std.process.Init) !void {
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    if (args.len > 2) fatal("usage: zvim [file]", .{});
+    const path: []const u8 = if (args.len == 2) args[1] else "";
+
+    var buffer = if (path.len > 0)
+        file.load(init.gpa, init.io, .cwd(), path) catch |err|
+            fatal("cannot open {s}: {s}", .{ path, @errorName(err) })
+    else
+        try @import("Buffer.zig").init(init.gpa, "");
+    defer buffer.deinit();
+
     var term = try Terminal.init();
     defer term.deinit();
 
@@ -11,16 +23,27 @@ pub fn main(init: std.process.Init) !void {
     const out = &out_file.interface;
 
     var size = Terminal.size();
+    var top: usize = 0;
     var in_buf: [256]u8 = undefined;
     while (true) {
-        try ui.drawFrame(out, size);
+        try ui.draw(out, size, .{ .buffer = &buffer, .name = path, .top = top });
         try out.flush();
 
         switch (try term.next(&in_buf)) {
             .resize => size = Terminal.size(),
-            .input => |bytes| if (std.mem.indexOfScalar(u8, bytes, 'q') != null) return,
+            .input => |bytes| for (bytes) |key| switch (key) {
+                'q' => return,
+                'j' => top = @min(top + 1, buffer.visibleLineCount() - 1),
+                'k' => top -|= 1,
+                else => {},
+            },
         }
     }
+}
+
+fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
+    std.debug.print("zvim: " ++ fmt ++ "\n", args);
+    std.process.exit(1);
 }
 
 test {
