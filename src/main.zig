@@ -63,6 +63,9 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
 
     var size = Terminal.size();
     var in_buf: [4096]u8 = undefined;
+    // Bytes of a key that may still be arriving (see `Decoder.final`) wait
+    // at the start of `in_buf` for the rest, for up to `key_wait_ms`.
+    var pending: usize = 0;
     var in_paste = false;
     while (true) {
         if (editor.clipboard_pending) {
@@ -105,33 +108,54 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
         });
         try out.flush();
 
-        switch (try term.next(&in_buf)) {
-            .resize => size = Terminal.size(),
-            .hangup => return .hangup,
-            .input => |bytes| {
-                var keys: Decoder = .{ .bytes = bytes, .in_paste = in_paste };
-                defer in_paste = keys.in_paste;
-                while (keys.next()) |key| {
-                    if (build_options.test_crash and key == .ctrl and key.ctrl == 0x7c) {
-                        @panic("test crash (Ctrl-\\ in a -Dtest-crash build)");
-                    }
-                    switch (try editor.handleKey(key)) {
-                        .none => {},
-                        .quit => return .quit,
-                        .write => |write| {
-                            file.save(&editor.buffer, init.io, .cwd(), write.path) catch |err| {
-                                editor.writeFailed(write.path, err);
-                                continue;
-                            };
-                            editor.wrote(write.path);
-                            if (write.then_quit) return .quit;
-                        },
-                    }
-                }
+        const event = try term.next(in_buf[pending..], if (pending > 0) key_wait_ms else null);
+        var input: []const u8, var final = switch (event) {
+            .resize => {
+                size = Terminal.size();
+                continue;
             },
+            .hangup => return .hangup,
+            .timeout => .{ in_buf[0..pending], true },
+            .input => |bytes| .{ in_buf[0 .. pending + bytes.len], false },
+        };
+        while (true) {
+            var keys: Decoder = .{ .bytes = input, .in_paste = in_paste, .final = final };
+            while (keys.next()) |key| {
+                if (build_options.test_crash and key == .ctrl and key.ctrl == 0x7c) {
+                    @panic("test crash (Ctrl-\\ in a -Dtest-crash build)");
+                }
+                switch (try editor.handleKey(key)) {
+                    .none => {},
+                    .quit => return .quit,
+                    .write => |write| {
+                        file.save(&editor.buffer, init.io, .cwd(), write.path) catch |err| {
+                            editor.writeFailed(write.path, err);
+                            continue;
+                        };
+                        editor.wrote(write.path);
+                        if (write.then_quit) return .quit;
+                    },
+                }
+            }
+            in_paste = keys.in_paste;
+            const left = keys.leftover();
+            // Something that long isn't a key on its way: decode it as is.
+            if (left.len > 32 and !final) {
+                input = left;
+                final = true;
+                continue;
+            }
+            std.mem.copyForwards(u8, in_buf[0..left.len], left);
+            pending = left.len;
+            break;
         }
     }
 }
+
+/// How long to wait for the rest of a key whose first bytes arrived (an
+/// escape sequence or UTF-8 character split across reads), before deciding
+/// it's complete. A lone Escape takes this long to register.
+const key_wait_ms = 50;
 
 /// Puts `text` on the system clipboard with OSC 52, which terminals such as
 /// wezterm, kitty and iTerm2 support, also over SSH.

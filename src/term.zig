@@ -15,6 +15,8 @@ pub const Event = union(enum) {
     resize,
     /// The terminal is gone or zvim was told to quit.
     hangup,
+    /// Nothing happened within the timeout.
+    timeout,
 };
 
 const stdin = posix.STDIN_FILENO;
@@ -96,14 +98,14 @@ pub const Terminal = struct {
     }
 
     /// Blocks until there is keyboard input, the window was resized, or the
-    /// session is ending. Input bytes are read into `buf`; signals take
-    /// priority.
-    pub fn next(_: *Terminal, buf: []u8) !Event {
+    /// session is ending, or for at most `timeout_ms` (null: no limit). Input
+    /// bytes are read into `buf`; signals take priority.
+    pub fn next(_: *Terminal, buf: []u8, timeout_ms: ?i32) !Event {
         var fds = [_]posix.pollfd{
             .{ .fd = signal_pipe[0], .events = posix.POLL.IN, .revents = 0 },
             .{ .fd = stdin, .events = posix.POLL.IN, .revents = 0 },
         };
-        _ = try posix.poll(&fds, -1);
+        if (try posix.poll(&fds, timeout_ms orelse -1) == 0) return .timeout;
 
         if (fds[0].revents & posix.POLL.IN != 0) {
             // Drain, so several queued resizes collapse into one redraw.
