@@ -261,8 +261,18 @@ pub fn reloaded(self: *Editor, buffer: Buffer) !void {
 /// Moves to the first non-blank of 1-based line `n`, clamped to the text.
 pub fn goToLine(self: *Editor, n: usize) !void {
     const line = @min(@max(n, 1), self.buffer.visibleLineCount()) - 1;
-    self.cursor = self.buffer.lineStart(line) + text.firstNonBlank(try self.lineText(line));
+    self.cursor = try self.firstNonBlankOf(line);
     try self.clampCursor();
+}
+
+/// Offset of the first non-blank character of `line` (its end, if it has none).
+pub fn firstNonBlankOf(self: *Editor, line: usize) !usize {
+    return self.buffer.lineStart(line) + text.firstNonBlank(try self.lineText(line));
+}
+
+/// The byte offset in line `s` that up/down movement aims for (`want_col`).
+pub fn wantByte(self: *const Editor, s: []const u8) usize {
+    return @min(text.byteAtCol(s, self.want_col), self.maxByte(s));
 }
 
 /// Called after a failed `write` action.

@@ -74,12 +74,15 @@ pub fn main(init: std.process.Init) !void {
 fn loadSettings(init: std.process.Init, editor: *Editor) void {
     const arena = init.arena.allocator();
     const path = settingsPath(init) orelse return;
-    const contents = std.Io.Dir.cwd().readFileAlloc(init.io, path, arena, .limited(1 << 20)) catch |err| {
+    const contents = std.Io.Dir.cwd().readFileAlloc(init.io, path, arena, .limited(max_settings_bytes)) catch |err| {
         if (err != error.FileNotFound) editor.setMessage(true, "cannot read {s}: {s}", .{ path, @errorName(err) });
         return;
     };
     settings.load(editor, contents);
 }
+
+/// A settings file larger than this isn't read.
+const max_settings_bytes = 1 << 20;
 
 fn settingsPath(init: std.process.Init) ?[]const u8 {
     const arena = init.arena.allocator();
@@ -230,7 +233,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
                             editor.setMessage(true, "No home directory to keep settings in", .{});
                             continue;
                         };
-                        const contents: ?[]u8 = std.Io.Dir.cwd().readFileAlloc(init.io, path, init.gpa, .limited(1 << 20)) catch |err| switch (err) {
+                        const contents: ?[]u8 = std.Io.Dir.cwd().readFileAlloc(init.io, path, init.gpa, .limited(max_settings_bytes)) catch |err| switch (err) {
                             error.FileNotFound => null,
                             else => {
                                 editor.setMessage(true, "E484: Can't read {s}: {s}", .{ path, @errorName(err) });

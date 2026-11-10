@@ -9,6 +9,9 @@ const normal = @import("normal.zig");
 const motions = @import("motions.zig");
 const settings = @import("settings.zig");
 
+const no_file_name = "E32: No file name";
+const unsaved_changes = "E37: No write since last change (add ! to override)";
+
 pub fn openCommandLine(ed: *Editor, kind: Editor.CommandKind) void {
     ed.command_return = ed.mode;
     ed.mode = .command;
@@ -82,11 +85,11 @@ pub fn runCommand(ed: *Editor) !Editor.Action {
             return .none;
         }
         if (ed.name.items.len == 0) {
-            ed.setMessage(true, "E32: No file name", .{});
+            ed.setMessage(true, no_file_name, .{});
             return .none;
         }
         if (ed.isModified() and !bang) {
-            ed.setMessage(true, "E37: No write since last change (add ! to override)", .{});
+            ed.setMessage(true, unsaved_changes, .{});
             return .none;
         }
         return .{ .reload = ed.name.items };
@@ -100,7 +103,7 @@ pub fn runCommand(ed: *Editor) !Editor.Action {
         }
         const path = if (arg.len > 0) arg else ed.name.items;
         if (path.len == 0) {
-            ed.setMessage(true, "E32: No file name", .{});
+            ed.setMessage(true, no_file_name, .{});
             return .none;
         }
         // Saving replaces the file through its directory, which could
@@ -115,7 +118,7 @@ pub fn runCommand(ed: *Editor) !Editor.Action {
     }
     if (std.mem.eql(u8, cmd, "q") and arg.len == 0) {
         if (ed.isModified() and !bang) {
-            ed.setMessage(true, "E37: No write since last change (add ! to override)", .{});
+            ed.setMessage(true, unsaved_changes, .{});
             return .none;
         }
         return .quit;

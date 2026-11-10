@@ -116,10 +116,14 @@ pub fn byteAtCol(s: []const u8, want: usize) usize {
     return s.len;
 }
 
+pub fn isBlank(c: u8) bool {
+    return c == ' ' or c == '\t';
+}
+
 /// Byte offset of the first character that isn't a space or tab.
 pub fn firstNonBlank(s: []const u8) usize {
     var i: usize = 0;
-    while (i < s.len and (s[i] == ' ' or s[i] == '\t')) i += 1;
+    while (i < s.len and isBlank(s[i])) i += 1;
     return i;
 }
 

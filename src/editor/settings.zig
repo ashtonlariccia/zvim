@@ -74,7 +74,7 @@ fn valueOf(ed: *Editor, option: Option) Value {
 pub fn runLine(ed: *Editor, line: []const u8) !bool {
     var words = std.mem.tokenizeAny(u8, line, " \t");
     const command = words.next() orelse return true;
-    if (std.mem.eql(u8, command, "set") or std.mem.eql(u8, command, "se")) return set(ed, words.rest());
+    if (isSet(command)) return set(ed, words.rest());
     if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "h")) {
         try @import("help.zig").open(ed);
         return true;
@@ -85,6 +85,10 @@ pub fn runLine(ed: *Editor, line: []const u8) !bool {
     }
     ed.setMessage(true, "Not a zvim command: {s} (try \\help)", .{std.mem.trim(u8, line, " \t")});
     return false;
+}
+
+fn isSet(command: []const u8) bool {
+    return std.mem.eql(u8, command, "set") or std.mem.eql(u8, command, "se");
 }
 
 /// Runs the arguments of a `set` command. Returns false, with the reason
@@ -169,7 +173,7 @@ pub fn load(ed: *Editor, contents: []const u8) void {
         if (line.len == 0 or line[0] == '"') continue;
         var words = std.mem.tokenizeAny(u8, line, " \t");
         const command = words.next().?;
-        const ok = if (std.mem.eql(u8, command, "set") or std.mem.eql(u8, command, "se"))
+        const ok = if (isSet(command))
             set(ed, words.rest())
         else blk: {
             ed.setMessage(true, "only set lines work here: {s}", .{line});

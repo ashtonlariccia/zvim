@@ -6,7 +6,6 @@ const Editor = @import("../Editor.zig");
 const Key = @import("../keys.zig").Key;
 const text = @import("../text.zig");
 const nextChar = text.nextChar;
-const byteAtCol = text.byteAtCol;
 const firstNonBlank = text.firstNonBlank;
 const normal = @import("normal.zig");
 const motions = @import("motions.zig");
@@ -79,22 +78,21 @@ pub fn operateLines(ed: *Editor, op: Editor.Op, first: usize, last_wanted: usize
             try ed.yanked();
             if (ed.buffer.lineOf(ed.cursor) != first) {
                 const s = try ed.lineText(first);
-                ed.cursor = start + @min(byteAtCol(s, ed.want_col), ed.maxByte(s));
+                ed.cursor = start + ed.wantByte(s);
             }
             if (n > 2) ed.setMessage(false, "{d} lines yanked", .{n});
         },
         .delete => {
             try setLineRegister(ed, start, end);
             try ed.deleteLines(start, end - start);
-            const line = @min(first, ed.buffer.visibleLineCount() - 1);
-            ed.cursor = ed.buffer.lineStart(line) + firstNonBlank(try ed.lineText(line));
+            ed.cursor = try ed.firstNonBlankOf(@min(first, ed.buffer.visibleLineCount() - 1));
             try ed.clampCursor();
             if (n > 2) ed.setMessage(false, "{d} fewer lines", .{n});
         },
         .change => {
             // Like Vim with autoindent, the first line's indentation stays.
             try setLineRegister(ed, start, end);
-            const indent = if (ed.settings.autoindent) text.firstNonBlank(try ed.lineText(first)) else 0;
+            const indent = if (ed.settings.autoindent) firstNonBlank(try ed.lineText(first)) else 0;
             try ed.deleteBytes(start + indent, ed.lineEnd(last) - start - indent);
             ed.cursor = start + indent;
             ed.autoindent_at = if (indent > 0) ed.cursor else null;
@@ -115,7 +113,7 @@ pub fn operateLines(ed: *Editor, op: Editor.Op, first: usize, last_wanted: usize
                     try ed.deleteBytes(line_start, k);
                 }
             }
-            ed.cursor = ed.buffer.lineStart(first) + firstNonBlank(try ed.lineText(first));
+            ed.cursor = try ed.firstNonBlankOf(first);
             try ed.clampCursor();
             if (n > 2) ed.setMessage(false, "{d} lines {s}ed 1 time", .{ n, if (op == .indent) ">" else "<" });
         },
@@ -183,7 +181,7 @@ pub fn paste(ed: *Editor, before: bool, n: usize) Allocator.Error!void {
                 for (0..n) |_| try ed.insertBytes(ed.buffer.len, reg);
                 first_new = line + 1;
             }
-            ed.cursor = ed.buffer.lineStart(first_new) + firstNonBlank(try ed.lineText(first_new));
+            ed.cursor = try ed.firstNonBlankOf(first_new);
             try ed.clampCursor();
             const added = n * std.mem.count(u8, reg, "\n");
             if (added > 2) ed.setMessage(false, "{d} more lines", .{added});
@@ -215,7 +213,7 @@ pub fn joinLines(ed: *Editor, n_wanted: usize) !void {
         const indent = firstNonBlank(next);
         const rest_empty = indent == next.len;
         const needs_space = !rest_empty and cur.len > 0 and
-            cur[cur.len - 1] != ' ' and cur[cur.len - 1] != '\t' and next[indent] != ')';
+            !text.isBlank(cur[cur.len - 1]) and next[indent] != ')';
         join_at = ed.lineEnd(first);
         try ed.deleteBytes(join_at, 1 + indent);
         if (needs_space) try ed.insertBytes(join_at, " ");

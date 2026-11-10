@@ -8,7 +8,6 @@ const Key = @import("../keys.zig").Key;
 const text = @import("../text.zig");
 const nextChar = text.nextChar;
 const prevChar = text.prevChar;
-const firstNonBlank = text.firstNonBlank;
 const cmdline = @import("cmdline.zig");
 const motions = @import("motions.zig");
 const operators = @import("operators.zig");
@@ -173,8 +172,7 @@ pub fn normalKey(ed: *Editor, key: Key) !void {
                 ed.mode = .insert;
             },
             'I' => if (in_visual) try visual.blockInsert(ed, false) else {
-                const line = ed.buffer.lineOf(ed.cursor);
-                ed.cursor = ed.buffer.lineStart(line) + firstNonBlank(try ed.lineText(line));
+                ed.cursor = try ed.firstNonBlankOf(ed.buffer.lineOf(ed.cursor));
                 ed.mode = .insert;
             },
             'A' => if (in_visual) try visual.blockInsert(ed, true) else {

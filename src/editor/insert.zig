@@ -38,8 +38,7 @@ pub fn pasteText(ed: *Editor, raw: []const u8) !void {
             try ed.insertAtCursor(pasted.items);
             ed.mode = .normal;
             // On the last pasted character, like leaving insert mode.
-            const p = ed.toPos(ed.cursor);
-            if (p.byte > 0) ed.cursor -= p.byte - prevChar(try ed.lineText(p.line), p.byte);
+            try stepBack(ed);
             try ed.clampCursor();
         },
     }
@@ -88,8 +87,7 @@ pub fn insertKey(ed: *Editor, key: Key) !void {
                 try visual.finishBlockInsert(ed);
             } else {
                 // Like Vim, leaving insert mode steps back onto the last typed character.
-                const p = ed.toPos(ed.cursor);
-                if (p.byte > 0) ed.cursor -= p.byte - prevChar(try ed.lineText(p.line), p.byte);
+                try stepBack(ed);
             }
             ed.mode = .normal;
             try ed.clampCursor();
@@ -100,6 +98,12 @@ pub fn insertKey(ed: *Editor, key: Key) !void {
             }
         },
     }
+}
+
+/// Moves the cursor onto the character before it, staying on its line.
+fn stepBack(ed: *Editor) !void {
+    const p = ed.toPos(ed.cursor);
+    if (p.byte > 0) ed.cursor -= p.byte - prevChar(try ed.lineText(p.line), p.byte);
 }
 
 /// Deletes the character under the cursor. In insert mode at the end of a

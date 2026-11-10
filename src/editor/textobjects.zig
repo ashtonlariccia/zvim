@@ -8,6 +8,7 @@ const text = @import("../text.zig");
 const words = @import("words.zig");
 const nextChar = text.nextChar;
 const prevChar = text.prevChar;
+const isBlank = text.isBlank;
 
 pub const Range = union(enum) {
     /// Bytes [start, end).
@@ -30,10 +31,6 @@ pub fn find(ed: *Editor, key: u21, around: bool, count: usize) !?Range {
         'p' => paragraph(ed, around),
         else => null,
     };
-}
-
-fn isBlank(c: u8) bool {
-    return c == ' ' or c == '\t';
 }
 
 fn classAt(s: []const u8, i: usize, big: bool) u2 {

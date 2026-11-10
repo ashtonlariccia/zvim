@@ -8,8 +8,6 @@ const text = @import("../text.zig");
 const words = @import("words.zig");
 const nextChar = text.nextChar;
 const prevChar = text.prevChar;
-const byteAtCol = text.byteAtCol;
-const firstNonBlank = text.firstNonBlank;
 const cmdline = @import("cmdline.zig");
 const operators = @import("operators.zig");
 
@@ -153,18 +151,12 @@ pub fn motionTarget(ed: *Editor, m: Motion, count: usize, has_count: bool, op: ?
         .down, .up, .down_first_non_blank => {
             const line = if (m == .up) here.line -| count else @min(here.line + count, lines - 1);
             if (line == here.line) return null;
-            const s = try ed.lineText(line);
-            if (m == .down_first_non_blank) {
-                return .{ .pos = ed.buffer.lineStart(line) + firstNonBlank(s), .kind = .linewise };
-            }
-            const b = @min(byteAtCol(s, ed.want_col), ed.maxByte(s));
+            if (m == .down_first_non_blank) return .{ .pos = try ed.firstNonBlankOf(line), .kind = .linewise };
+            const b = ed.wantByte(try ed.lineText(line));
             return .{ .pos = ed.buffer.lineStart(line) + b, .kind = .linewise, .want = .keep };
         },
         .line_start => return .{ .pos = ed.buffer.lineStart(here.line), .kind = .exclusive },
-        .first_non_blank => {
-            const s = try ed.lineText(here.line);
-            return .{ .pos = ed.buffer.lineStart(here.line) + firstNonBlank(s), .kind = .exclusive };
-        },
+        .first_non_blank => return .{ .pos = try ed.firstNonBlankOf(here.line), .kind = .exclusive },
         .line_end => {
             const line = @min(here.line + count - 1, lines - 1);
             const s = try ed.lineText(line);
@@ -209,8 +201,7 @@ pub fn motionTarget(ed: *Editor, m: Motion, count: usize, has_count: bool, op: ?
         },
         .file_start, .file_end => {
             const line = if (has_count) @min(count, lines) - 1 else if (m == .file_start) 0 else lines - 1;
-            const s = try ed.lineText(line);
-            return .{ .pos = ed.buffer.lineStart(line) + firstNonBlank(s), .kind = .linewise };
+            return .{ .pos = try ed.firstNonBlankOf(line), .kind = .linewise };
         },
         .half_page_down, .half_page_up => {
             const amount = if (has_count) count else @max(1, ed.view_rows / 2);
@@ -222,8 +213,7 @@ pub fn motionTarget(ed: *Editor, m: Motion, count: usize, has_count: bool, op: ?
             } else {
                 ed.top = @min(ed.top + amount, lines - 1);
             }
-            const s = try ed.lineText(line);
-            const b = @min(byteAtCol(s, ed.want_col), ed.maxByte(s));
+            const b = ed.wantByte(try ed.lineText(line));
             return .{ .pos = ed.buffer.lineStart(line) + b, .kind = .linewise, .want = .keep };
         },
         .find => |f| return findTarget(ed, here, f.kind, f.target, count, f.repeat),
@@ -261,7 +251,7 @@ pub fn findTarget(ed: *Editor, here: words.Pos, kind: words.FindKind, target: u2
 
 pub fn onBlank(ed: *Editor, p: words.Pos) !bool {
     const s = try ed.lineText(p.line);
-    return p.byte >= s.len or s[p.byte] == ' ' or s[p.byte] == '\t';
+    return p.byte >= s.len or text.isBlank(s[p.byte]);
 }
 
 const testing = std.testing;
