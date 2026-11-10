@@ -614,6 +614,7 @@ test {
     _ = insert;
     _ = @import("editor/textobjects.zig");
     _ = @import("editor/settings.zig");
+    _ = @import("editor/autoclose.zig");
     _ = h;
 }
 
@@ -707,7 +708,7 @@ test "random key sequences keep the editor consistent and fully undoable" {
         "中",
         "\x1b[3~", "\x1b[A", "\x1b[C", "/a\r", "?e\r", "n",   "N",   "\x04", "\x15",    ":q\r",    ":x\r",   ":zz\r", "y",
         "d",       "c",      ">",      "<",    "3",    "jj",  "vjd", "Vjy",  "\x16jlI", "\x16jlA", "\x16jd", "vep",   "diw",
-        "daw",     "ci\"",   "da(",    "yi{",  "vip",  "vaw", "dap", ">ip",  "d2i(",    "ciW",     "ya'",
+        "daw",     "ci\"",   "da(",    "yi{",  "vip",  "vaw", "dap", ">ip",  "d2i(",    "ciW",     "ya'",    "a{(\r", "i'\")]\x7f",
     };
     const originals = [_][]const u8{
         "    indented {\n\tmore\n  }\n",
@@ -728,6 +729,7 @@ test "random key sequences keep the editor consistent and fully undoable" {
         var e = try testEditor(original);
         defer e.deinit();
         e.view_rows = 5;
+        e.settings.autoclose = run % 2 == 1;
         var picked: [STRESS_KEYS]usize = undefined;
         for (0..STRESS_KEYS) |step| {
             picked[step] = rand.uintLessThan(usize, pool.len);

@@ -33,6 +33,7 @@ first writing one that lists every setting at its default if there isn't one.
     set nonumber               " line numbers down the left...
     set norelativenumber       " ...or distances from the cursor's line
     set messagetime=1000       " ms a message shows before the status bar returns
+    set noautoclose            " typed brackets and quotes come in pairs
 
 A bad line is skipped and reported when zvim starts.
 
@@ -59,6 +60,7 @@ nearly everything testable as "type these keys, expect this text".
 | `src/editor/operators.zig` | `d y c > <` on ranges and lines, the register, `p`, `J`, `r` |
 | `src/editor/visual.zig` | `v`, `V` and Ctrl-V selections, block insert and paste |
 | `src/editor/insert.zig` | Insert mode, and text pasted into the terminal |
+| `src/editor/autoclose.zig` | The `autoclose` setting: paired brackets and quotes |
 | `src/editor/cmdline.zig` | The command line: `:` commands and `/` `?` search |
 | `src/editor/settings.zig` | Settings and the settings file |
 | `src/editor/textobjects.zig` | `iw`, `i"`, `a(`, `ip` and the other text objects |

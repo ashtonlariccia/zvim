@@ -9,6 +9,7 @@ const prevChar = text.prevChar;
 const normal = @import("normal.zig");
 const motions = @import("motions.zig");
 const visual = @import("visual.zig");
+const autoclose = @import("autoclose.zig");
 
 /// Text pasted into the terminal: inserted at the cursor in insert mode,
 /// before the cursor in normal and visual mode (as one undo step), and onto
@@ -68,17 +69,18 @@ pub fn insertKey(ed: *Editor, key: Key) !void {
     if (key != .enter and key != .escape) ed.autoindent_at = null;
     switch (key) {
         .char => |c| {
+            if (try autoclose.typed(ed, c)) return;
             var bytes: [4]u8 = undefined;
             const n = std.unicode.utf8Encode(c, &bytes) catch return;
             try ed.insertAtCursor(bytes[0..n]);
         },
-        .enter => try newLine(ed),
+        .enter => if (!try autoclose.enter(ed)) try newLine(ed),
         .tab => if (ed.settings.expandtab) {
             // Spaces up to the next multiple of shiftwidth.
             const width = ed.settings.shiftwidth;
             try ed.insertAtCursor(Editor.blanks[0 .. width - (try ed.cursorPos()).col % width]);
         } else try ed.insertAtCursor("\t"),
-        .backspace => try deleteBeforeCursor(ed),
+        .backspace => if (!try autoclose.backspace(ed)) try deleteBeforeCursor(ed),
         .delete => try deleteUnderCursor(ed),
         .escape => {
             try ed.dropUnusedAutoindent();

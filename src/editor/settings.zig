@@ -29,6 +29,9 @@ pub const Settings = struct {
     /// How long a message stays in the bottom row before the status bar
     /// comes back, in milliseconds; 0 keeps it until the next key.
     messagetime: usize = 1000,
+    /// Brackets and quotes typed in insert mode come in pairs (see
+    /// autoclose.zig).
+    autoclose: bool = false,
 };
 
 pub const max_width = 32;
@@ -43,8 +46,9 @@ const Option = enum {
     number,
     relativenumber,
     messagetime,
+    autoclose,
 
-    const short = [_][]const u8{ "ic", "scs", "ai", "et", "ts", "sw", "nu", "rnu", "mt" };
+    const short = [_][]const u8{ "ic", "scs", "ai", "et", "ts", "sw", "nu", "rnu", "mt", "ac" };
 
     /// For the settings file and --help.
     const about = [_][]const u8{
@@ -57,6 +61,7 @@ const Option = enum {
         "Line numbers down the left...",
         "...or each line's distance from the cursor",
         "How long messages show, in ms (0: until a key)",
+        "Typed brackets and quotes come in pairs",
     };
 
     /// The numbers a number setting takes.
@@ -88,6 +93,7 @@ fn valueOf(settings: *Settings, option: Option) Value {
         .number => .{ .flag = &settings.number },
         .relativenumber => .{ .flag = &settings.relativenumber },
         .messagetime => .{ .number = &settings.messagetime },
+        .autoclose => .{ .flag = &settings.autoclose },
     };
 }
 
@@ -282,6 +288,9 @@ test "the settings file zvim -s starts from lists every setting at its default" 
         \\" How long messages show, in ms (0: until a key)
         \\set messagetime=1000
         \\
+        \\" Typed brackets and quotes come in pairs
+        \\set noautoclose
+        \\
     , w.buffered());
     // Loading it changes nothing.
     var e = try testEditor("");
@@ -305,6 +314,7 @@ test "the settings list for --help" {
         \\  number         nu  off  Line numbers down the left...
         \\  relativenumber rnu off  ...or each line's distance from the cursor
         \\  messagetime    mt  1000 How long messages show, in ms (0: until a key)
+        \\  autoclose      ac  off  Typed brackets and quotes come in pairs
         \\
     , w.buffered());
 }

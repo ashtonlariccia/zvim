@@ -121,7 +121,7 @@ pub fn operateLines(ed: *Editor, op: Editor.Op, first: usize, last_wanted: usize
 }
 
 /// One level of indentation: a tab, or `shiftwidth` spaces with `expandtab`.
-fn indentUnit(ed: *const Editor) []const u8 {
+pub fn indentUnit(ed: *const Editor) []const u8 {
     return if (ed.settings.expandtab) Editor.blanks[0..ed.settings.shiftwidth] else "\t";
 }
 
