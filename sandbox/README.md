@@ -18,4 +18,4 @@ Current controls (viewing only, no editing yet):
 
 - `j` / `k` scroll down / up
 - `q` quit
-- resize the window to watch the frame redraw
+- resize the window to watch the view redraw
