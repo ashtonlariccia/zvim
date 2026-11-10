@@ -14,12 +14,16 @@ characters, a long line and 200 lines of scrolling. Drop throwaway files in
 here freely; everything except this README, `run.sh` and `sample.txt` is
 git-ignored.
 
-Current controls (viewing only, no editing yet):
+Controls so far (a small subset of Vim's):
 
-- `j` / `k` scroll down / up
-- `h` / `l` scroll left / right (long lines)
-- `q` quit
-- resize the window to watch the view redraw
+- Normal mode: `h` `j` `k` `l` / arrows move, `0` / `$` line start / end,
+  `x` deletes a character
+- Enter insert mode: `i` before the cursor, `a` after, `I` at the first
+  non-blank, `A` at the line end, `o` / `O` on a new line below / above
+- Insert mode: type, Enter, Backspace, Delete, Tab, arrows; Esc to leave
+- Commands: `:w` save, `:w name` save as, `:q` quit (refused with unsaved
+  changes), `:q!` quit anyway, `:wq` / `:x` save and quit
 
-The status bar shows the file name, the terminal size, `Ln` (first visible
-line / total lines) and `Col` (first visible column).
+The status bar shows the file name, `[+]` for unsaved changes, the mode, the
+terminal size, and the cursor position: `Ln` (line / total lines) and `Col`
+(screen column).

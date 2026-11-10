@@ -15,7 +15,7 @@ pub fn main(init: std.process.Init) !void {
             fatal("cannot open {s}: {s}", .{ path, @errorName(err) })
     else
         try @import("Buffer.zig").init(init.gpa, "");
-    var editor: Editor = .init(init.gpa, buffer);
+    var editor: Editor = try .init(init.gpa, buffer, path);
     defer editor.deinit();
 
     var term = try Terminal.init();
@@ -32,13 +32,18 @@ pub fn main(init: std.process.Init) !void {
         const pos = try editor.cursorPos();
         try ui.draw(out, size, .{
             .buffer = &editor.buffer,
-            .name = path,
+            .name = editor.name.items,
             .top = editor.top,
             .left = editor.left,
             .cursor = .{ .line = pos.line, .col = pos.col },
             .cursor_shape = if (editor.mode == .insert) .bar else .block,
             .mode = if (editor.mode == .insert) "-- INSERT --" else "",
             .modified = editor.modified,
+            .command = if (editor.mode == .command) editor.command.items else null,
+            .message = if (editor.message.len > 0)
+                .{ .text = editor.message.text(), .is_error = editor.message.is_error }
+            else
+                null,
         });
         try out.flush();
 
@@ -46,10 +51,18 @@ pub fn main(init: std.process.Init) !void {
             .resize => size = Terminal.size(),
             .input => |bytes| {
                 var keys: Decoder = .{ .bytes = bytes };
-                while (keys.next()) |key| {
-                    if (editor.mode == .normal and key == .char and key.char == 'q') return;
-                    try editor.handleKey(key);
-                }
+                while (keys.next()) |key| switch (try editor.handleKey(key)) {
+                    .none => {},
+                    .quit => return,
+                    .write => |write| {
+                        file.save(&editor.buffer, init.io, .cwd(), write.path) catch |err| {
+                            editor.writeFailed(write.path, err);
+                            continue;
+                        };
+                        editor.wrote(write.path);
+                        if (write.then_quit) return;
+                    },
+                };
             },
         }
     }

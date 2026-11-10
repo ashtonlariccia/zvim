@@ -28,17 +28,65 @@ top: usize = 0,
 left: usize = 0,
 /// Scratch copy of the cursor's line.
 line_buf: std.ArrayList(u8) = .empty,
+/// File name the buffer is saved to; empty if it has none yet.
+name: std.ArrayList(u8) = .empty,
+/// Text typed after ':' in command mode.
+command: std.ArrayList(u8) = .empty,
+/// Shown in place of the status bar until the next key.
+message: Message = .{},
 
-pub const Mode = enum { normal, insert };
+pub const Mode = enum { normal, insert, command };
 
-pub fn init(gpa: Allocator, buffer: Buffer) Editor {
-    return .{ .gpa = gpa, .buffer = buffer };
+pub const Message = struct {
+    buf: [256]u8 = undefined,
+    len: usize = 0,
+    is_error: bool = false,
+
+    pub fn text(m: *const Message) []const u8 {
+        return m.buf[0..m.len];
+    }
+};
+
+/// What the caller has to do after a key, since the editor does no I/O.
+pub const Action = union(enum) {
+    none,
+    quit,
+    /// Save the buffer to `path`, then report back with `wrote` or `writeFailed`.
+    write: struct { path: []const u8, then_quit: bool },
+};
+
+pub fn init(gpa: Allocator, buffer: Buffer, name: []const u8) !Editor {
+    var self: Editor = .{ .gpa = gpa, .buffer = buffer };
+    try self.name.appendSlice(gpa, name);
+    return self;
 }
 
 pub fn deinit(self: *Editor) void {
     self.buffer.deinit();
     self.line_buf.deinit(self.gpa);
+    self.name.deinit(self.gpa);
+    self.command.deinit(self.gpa);
     self.* = undefined;
+}
+
+/// Shows a message until the next key.
+pub fn setMessage(self: *Editor, is_error: bool, comptime fmt: []const u8, args: anytype) void {
+    const written = std.fmt.bufPrint(&self.message.buf, fmt, args) catch |err| switch (err) {
+        error.NoSpaceLeft => self.message.buf[0..],
+    };
+    self.message.len = written.len;
+    self.message.is_error = is_error;
+}
+
+/// Called after a successful `write` action.
+pub fn wrote(self: *Editor, path: []const u8) void {
+    self.modified = false;
+    self.setMessage(false, "\"{s}\" {d}L, {d}B written", .{ path, self.buffer.visibleLineCount(), self.buffer.len });
+}
+
+/// Called after a failed `write` action.
+pub fn writeFailed(self: *Editor, path: []const u8, err: anyerror) void {
+    self.setMessage(true, "E212: Can't write \"{s}\": {s}", .{ path, @errorName(err) });
 }
 
 pub const Pos = struct {
@@ -57,11 +105,80 @@ pub fn cursorPos(self: *Editor) !Pos {
     return .{ .line = line, .byte = byte, .col = displayCol(s, byte) };
 }
 
-pub fn handleKey(self: *Editor, key: Key) !void {
+pub fn handleKey(self: *Editor, key: Key) !Action {
+    self.message.len = 0;
     switch (self.mode) {
         .normal => try self.normalKey(key),
         .insert => try self.insertKey(key),
+        .command => return self.commandKey(key),
     }
+    return .none;
+}
+
+fn commandKey(self: *Editor, key: Key) !Action {
+    switch (key) {
+        .char => |c| {
+            var bytes: [4]u8 = undefined;
+            const n = std.unicode.utf8Encode(c, &bytes) catch return .none;
+            try self.command.appendSlice(self.gpa, bytes[0..n]);
+        },
+        .tab => try self.command.append(self.gpa, '\t'),
+        .backspace => {
+            if (self.command.items.len == 0) {
+                self.mode = .normal;
+            } else {
+                self.command.shrinkRetainingCapacity(text.prevStart(self.command.items, self.command.items.len));
+            }
+        },
+        .escape => self.mode = .normal,
+        .enter => {
+            self.mode = .normal;
+            return self.runCommand();
+        },
+        else => {},
+    }
+    return .none;
+}
+
+/// Runs the command line: w, q, wq, x, each optionally with ! and w/wq/x
+/// with a file name.
+fn runCommand(self: *Editor) !Action {
+    const line = std.mem.trim(u8, self.command.items, " \t");
+    var name_end: usize = 0;
+    while (name_end < line.len and std.ascii.isAlphabetic(line[name_end])) name_end += 1;
+    const cmd = line[0..name_end];
+    var rest = line[name_end..];
+    const bang = rest.len > 0 and rest[0] == '!';
+    if (bang) rest = rest[1..];
+    const arg = std.mem.trim(u8, rest, " \t");
+
+    if (cmd.len == 0 and line.len == 0) return .none;
+    const write = std.mem.eql(u8, cmd, "w");
+    const write_quit = std.mem.eql(u8, cmd, "wq") or std.mem.eql(u8, cmd, "x");
+    if (write or write_quit) {
+        if (arg.len > 0 and self.name.items.len == 0) {
+            try self.name.appendSlice(self.gpa, arg);
+        }
+        const path = if (arg.len > 0) arg else self.name.items;
+        if (path.len == 0) {
+            self.setMessage(true, "E32: No file name", .{});
+            return .none;
+        }
+        // Like Vim, a file always ends with a newline when written.
+        var tail = self.buffer.chunksFrom(self.buffer.len -| 1);
+        const last = if (tail.next()) |chunk| chunk[0] else '\n';
+        if (last != '\n') try self.buffer.insert(self.buffer.len, "\n");
+        return .{ .write = .{ .path = path, .then_quit = write_quit } };
+    }
+    if (std.mem.eql(u8, cmd, "q") and arg.len == 0) {
+        if (self.modified and !bang) {
+            self.setMessage(true, "E37: No write since last change (add ! to override)", .{});
+            return .none;
+        }
+        return .quit;
+    }
+    self.setMessage(true, "E492: Not an editor command: {s}", .{line});
+    return .none;
 }
 
 fn normalKey(self: *Editor, key: Key) !void {
@@ -92,6 +209,10 @@ fn normalKey(self: *Editor, key: Key) !void {
                 self.cursor = self.lineEnd(line);
                 try self.insertAtCursor("\n");
                 self.mode = .insert;
+            },
+            ':' => {
+                self.mode = .command;
+                self.command.clearRetainingCapacity();
             },
             'O' => {
                 self.cursor = self.buffer.lineStart(self.buffer.lineOf(self.cursor));
@@ -260,7 +381,7 @@ fn moveLineEnd(self: *Editor) !void {
 /// character in normal mode, after it in insert mode.
 fn maxByte(self: *const Editor, s: []const u8) usize {
     return switch (self.mode) {
-        .normal => if (s.len == 0) 0 else prevChar(s, s.len),
+        .normal, .command => if (s.len == 0) 0 else prevChar(s, s.len),
         .insert => s.len,
     };
 }
@@ -336,12 +457,12 @@ const testing = std.testing;
 const Decoder = @import("keys.zig").Decoder;
 
 fn testEditor(content: []const u8) !Editor {
-    return .init(testing.allocator, try .init(testing.allocator, content));
+    return .init(testing.allocator, try .init(testing.allocator, content), "");
 }
 
 fn typeKeys(e: *Editor, input: []const u8) !void {
     var d: Decoder = .{ .bytes = input };
-    while (d.next()) |key| try e.handleKey(key);
+    while (d.next()) |key| try testing.expectEqual(Action.none, try e.handleKey(key));
 }
 
 fn expectCursor(e: *Editor, line: usize, byte: usize) !void {
@@ -475,7 +596,7 @@ fn expectText(e: *Editor, expected: []const u8) !void {
 /// after it in the same input would read as an escape sequence.
 fn typeThenEscape(e: *Editor, input: []const u8) !void {
     try typeKeys(e, input);
-    try e.handleKey(.escape);
+    _ = try e.handleKey(.escape);
 }
 
 test "i inserts before the cursor; Escape steps back onto the last typed character" {
@@ -585,6 +706,79 @@ test "in insert mode the cursor can sit after the last character" {
     try expectCursor(&e, 1, 7);
     try typeKeys(&e, "\x1b[A"); // up: past the end of "ab"
     try expectCursor(&e, 0, 2);
-    try e.handleKey(.escape);
+    _ = try e.handleKey(.escape);
     try expectCursor(&e, 0, 1);
+}
+
+/// Types `:` and `command`, presses Enter, and returns the resulting action.
+fn runTyped(e: *Editor, command: []const u8) !Action {
+    try typeKeys(e, ":");
+    try typeKeys(e, command);
+    return e.handleKey(.enter);
+}
+
+test ":q quits only without unsaved changes, :q! always" {
+    var e = try testEditor("abc\n");
+    defer e.deinit();
+    try testing.expectEqual(Action.quit, try runTyped(&e, "q"));
+    try typeKeys(&e, "x");
+    try testing.expectEqual(Action.none, try runTyped(&e, "q"));
+    try testing.expectEqualStrings("E37: No write since last change (add ! to override)", e.message.text());
+    try testing.expect(e.message.is_error);
+    try testing.expectEqual(Action.quit, try runTyped(&e, "q!"));
+}
+
+test ":w writes to the buffer's name; :w name and :wq" {
+    var e: Editor = try .init(testing.allocator, try .init(testing.allocator, "abc\n"), "f.txt");
+    defer e.deinit();
+    const w = try runTyped(&e, "w");
+    try testing.expectEqualStrings("f.txt", w.write.path);
+    try testing.expect(!w.write.then_quit);
+    e.wrote(w.write.path);
+    try testing.expect(!e.modified);
+    try testing.expectEqualStrings("\"f.txt\" 1L, 4B written", e.message.text());
+
+    const other = try runTyped(&e, "w  other.txt ");
+    try testing.expectEqualStrings("other.txt", other.write.path);
+    try testing.expectEqualStrings("f.txt", e.name.items); // the buffer keeps its name
+
+    try testing.expect((try runTyped(&e, "wq")).write.then_quit);
+    try testing.expect((try runTyped(&e, "x")).write.then_quit);
+}
+
+test ":w without any name asks for one; :w name gives the buffer that name" {
+    var e = try testEditor("");
+    defer e.deinit();
+    try testing.expectEqual(Action.none, try runTyped(&e, "w"));
+    try testing.expectEqualStrings("E32: No file name", e.message.text());
+    try testing.expectEqualStrings("new.txt", (try runTyped(&e, "w new.txt")).write.path);
+    try testing.expectEqualStrings("new.txt", e.name.items);
+}
+
+test "writing adds a final newline when the text lacks one" {
+    var e = try testEditor("no newline");
+    defer e.deinit();
+    _ = try runTyped(&e, "w x");
+    try expectText(&e, "no newline\n");
+    var empty = try testEditor("");
+    defer empty.deinit();
+    _ = try runTyped(&empty, "w y");
+    try expectText(&empty, ""); // an empty file stays empty
+}
+
+test "unknown commands, Escape and Backspace on an empty command line" {
+    var e = try testEditor("abc\n");
+    defer e.deinit();
+    try testing.expectEqual(Action.none, try runTyped(&e, "frobnicate"));
+    try testing.expectEqualStrings("E492: Not an editor command: frobnicate", e.message.text());
+    try typeKeys(&e, "l"); // any key clears the message
+    try testing.expectEqual(@as(usize, 0), e.message.len);
+
+    try typeKeys(&e, ":q");
+    _ = try e.handleKey(.escape);
+    try testing.expectEqual(Mode.normal, e.mode);
+    try typeKeys(&e, ":q\x7f\x7f");
+    try testing.expectEqual(Mode.normal, e.mode);
+    try typeKeys(&e, "x"); // back in normal mode: deletes a character
+    try expectText(&e, "ac\n");
 }

@@ -20,6 +20,7 @@ const sync_begin = "\x1b[?2026h"; // synchronized output: no tearing mid-frame
 const sync_end = "\x1b[?2026l";
 const reverse = "\x1b[7m";
 const reset = "\x1b[m";
+const red = "\x1b[31m";
 const hide_cursor = "\x1b[?25l";
 const show_cursor = "\x1b[?25h";
 
@@ -39,7 +40,14 @@ pub const View = struct {
     mode: []const u8 = "",
     /// Unsaved changes, shown as [+].
     modified: bool = false,
+    /// When set, the bottom row is a command line showing ':' and this text,
+    /// with the cursor at its end.
+    command: ?[]const u8 = null,
+    /// When set (and not in command mode), shown instead of the status bar.
+    message: ?Message = null,
 };
+
+pub const Message = struct { text: []const u8, is_error: bool };
 
 pub const Cursor = struct { line: usize = 0, col: usize = 0 };
 
@@ -80,7 +88,29 @@ pub fn draw(w: *std.Io.Writer, size: Size, view: View) !void {
 
     if (size.rows >= 2) {
         try w.print("\x1b[{d};1H", .{size.rows});
-        try drawStatus(w, size, view, lines);
+        if (view.command) |command| {
+            // ':' and the text, scrolled so the cursor after them stays visible.
+            var chars: SliceChars = .{ .bytes = command };
+            const width = 1 + try drawChars(null, &chars, 0, std.math.maxInt(usize));
+            const hidden = (width + 1) -| cols; // columns scrolled off the left
+            const colon: usize = if (hidden == 0) 1 else 0;
+            if (colon == 1) try w.writeAll(":");
+            chars = .{ .bytes = command };
+            const used = colon + try drawChars(w, &chars, hidden -| 1, cols - colon);
+            if (used < cols) try w.writeAll("\x1b[K");
+            try w.print("\x1b[{d};{d}H", .{ size.rows, width - hidden + 1 });
+            try w.writeAll(CursorShape.bar.sequence());
+            try w.writeAll(show_cursor);
+            return;
+        } else if (view.message) |message| {
+            var chars: SliceChars = .{ .bytes = message.text };
+            if (message.is_error) try w.writeAll(red);
+            const used = try drawChars(w, &chars, 0, cols);
+            if (message.is_error) try w.writeAll(reset);
+            if (used < cols) try w.writeAll("\x1b[K");
+        } else {
+            try drawStatus(w, size, view, lines);
+        }
     }
 
     // Show the cursor only when it is on screen.
@@ -414,6 +444,29 @@ test "status bar shows the cursor position, unsaved changes and the mode" {
     try expectScreen(3, 42, view, .{ "abc", "def", " f [+]  -- INSERT --  42x3  Ln 2/2  Col 3" });
     // Narrower: the size goes before the name and mode do.
     try expectScreen(3, 40, view, .{ "abc", "def", " f [+]  -- INSERT --      Ln 2/2  Col 3" });
+}
+
+test "command line and messages replace the status bar" {
+    var b: Buffer = try .init(testing.allocator, "abc\n");
+    defer b.deinit();
+    try expectScreen(2, 20, .{ .buffer = &b, .name = "f", .top = 0, .command = "wq" }, .{ "abc", ":wq" });
+    try expectScreen(2, 20, .{ .buffer = &b, .name = "f", .top = 0, .message = .{ .text = "E37: No write", .is_error = true } }, .{ "abc", "E37: No write" });
+
+    var buf: [4096]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try draw(&w, .{ .rows = 2, .cols = 20 }, .{ .buffer = &b, .name = "", .top = 0, .command = "wq" });
+    try testing.expect(std.mem.endsWith(u8, w.buffered(), "\x1b[2;4H\x1b[6 q" ++ show_cursor ++ sync_end));
+}
+
+test "a long command line scrolls to keep the cursor in view" {
+    var b: Buffer = try .init(testing.allocator, "");
+    defer b.deinit();
+    try expectScreen(2, 8, .{ .buffer = &b, .name = "", .top = 0, .command = "w a_long_name" }, .{ "", "ng_name" });
+
+    var buf: [4096]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try draw(&w, .{ .rows = 2, .cols = 8 }, .{ .buffer = &b, .name = "", .top = 0, .command = "w a_long_name" });
+    try testing.expect(std.mem.endsWith(u8, w.buffered(), "\x1b[2;8H\x1b[6 q" ++ show_cursor ++ sync_end));
 }
 
 test "a line that exactly fills the row keeps its last character" {
