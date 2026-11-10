@@ -72,6 +72,10 @@ last_search_forward: bool = true,
 visual_anchor: usize = 0,
 visual_kind: VisualKind = .char,
 dot: Dot = .{},
+/// The file exists but can't be written; shown as [RO], and the first change
+/// warns that saving will fail.
+readonly: bool = false,
+warned_readonly: bool = false,
 /// The file uses Windows line endings (\r\n); the buffer holds plain lines
 /// and saving puts the \r back.
 crlf: bool = false,
@@ -158,7 +162,12 @@ pub const Action = union(enum) {
     none,
     quit,
     /// Save the buffer to `path`, then report back with `wrote` or `writeFailed`.
-    write: struct { path: []const u8, then_quit: bool },
+    write: struct {
+        path: []const u8,
+        then_quit: bool,
+        /// :w! — write even over a read-only file or one changed on disk.
+        force: bool = false,
+    },
     /// Ctrl-Z: stop zvim as a shell job until it's continued.
     @"suspend",
     /// Load the file at `path` again and hand it to `reloaded`.
@@ -336,6 +345,11 @@ pub fn handleKey(self: *Editor, key: Key) Allocator.Error!Action {
     // Everything since the last commit is one undo step, except that a trip
     // through insert mode stays open until it ends.
     if (self.mode != .insert) try self.history.commit(self.gpa);
+
+    if (self.readonly and !self.warned_readonly and self.isModified()) {
+        self.warned_readonly = true;
+        self.setMessage(true, "W10: Warning: Changing a readonly file", .{});
+    }
 
     if (self.suspend_requested) {
         self.suspend_requested = false;

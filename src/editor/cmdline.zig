@@ -101,11 +101,17 @@ pub fn runCommand(ed: *Editor) !Editor.Action {
             ed.setMessage(true, "E32: No file name", .{});
             return .none;
         }
+        // Saving replaces the file through its directory, which could
+        // overwrite a read-only file; like Vim, that takes a !.
+        if (ed.readonly and !bang and std.mem.eql(u8, path, ed.name.items)) {
+            ed.setMessage(true, "E45: File is read-only (add ! to override)", .{});
+            return .none;
+        }
         // Like Vim, a file always ends with a newline when written.
         var tail = ed.buffer.chunksFrom(ed.buffer.len -| 1);
         const last = if (tail.next()) |chunk| chunk[0] else '\n';
         if (last != '\n') try ed.insertBytes(ed.buffer.len, "\n");
-        return .{ .write = .{ .path = path, .then_quit = write_quit } };
+        return .{ .write = .{ .path = path, .then_quit = write_quit, .force = bang } };
     }
     if (std.mem.eql(u8, cmd, "q") and arg.len == 0) {
         if (ed.isModified() and !bang) {
@@ -285,4 +291,28 @@ test ":e reloads only without unsaved changes, :e! always" {
     try testing.expect(!e.isModified());
     try typeKeys(&e, "u"); // a fresh undo history
     try testing.expectEqualStrings("Already at oldest change", e.message.text());
+}
+
+test ":w on a read-only file needs !" {
+    var e: Editor = try .init(testing.allocator, try .init(testing.allocator, "abc\n"), "ro.txt");
+    defer e.deinit();
+    e.readonly = true;
+    try typeKeys(&e, "x");
+    try testing.expectEqual(Editor.Action.none, try runTyped(&e, "w"));
+    try testing.expectEqualStrings("E45: File is read-only (add ! to override)", e.message.text());
+    try testing.expectEqual(Editor.Action.none, try runTyped(&e, "wq"));
+    try testing.expect((try runTyped(&e, "w!")).write.force);
+    try testing.expectEqualStrings("copy.txt", (try runTyped(&e, "w copy.txt")).write.path); // another file is fine
+}
+
+test "the first change to a read-only file warns once" {
+    var e = try testEditor("abc\n");
+    defer e.deinit();
+    e.readonly = true;
+    try typeKeys(&e, "l");
+    try testing.expectEqual(@as(usize, 0), e.message.len);
+    try typeKeys(&e, "x");
+    try testing.expectEqualStrings("W10: Warning: Changing a readonly file", e.message.text());
+    try typeKeys(&e, "x");
+    try testing.expectEqual(@as(usize, 0), e.message.len);
 }

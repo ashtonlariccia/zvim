@@ -42,6 +42,8 @@ pub const View = struct {
     modified: bool = false,
     /// Windows line endings, shown as [CRLF].
     crlf: bool = false,
+    /// The file can't be written, shown as [RO].
+    readonly: bool = false,
     /// When set, the bottom row is a command line showing ':' and this text,
     /// with the cursor at its end.
     command: ?[]const u8 = null,
@@ -188,9 +190,10 @@ fn drawStatus(w: *std.Io.Writer, size: Size, view: View, lines: usize) !void {
         try std.fmt.bufPrint(&bufs[2], "Ln {d}/{d}", .{ view.cursor.line + 1, lines }),
     };
     var name_buf: [std.Io.Dir.max_path_bytes + 32]u8 = undefined;
-    const name = std.fmt.bufPrint(&name_buf, "{s}{s}{s}{s}{s}", .{
+    const name = std.fmt.bufPrint(&name_buf, "{s}{s}{s}{s}{s}{s}", .{
         if (view.name.len > 0) view.name else "[new]",
         if (view.modified) " [+]" else "",
+        if (view.readonly) " [RO]" else "",
         if (view.crlf) " [CRLF]" else "",
         if (view.mode.len > 0) "  " else "",
         view.mode,

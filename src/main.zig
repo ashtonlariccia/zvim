@@ -41,6 +41,7 @@ pub fn main(init: std.process.Init) !void {
     var editor: Editor = try .init(init.gpa, loaded.buffer, path);
     defer editor.deinit();
     editor.crlf = loaded.crlf;
+    editor.readonly = isReadOnly(init.io, path);
     if (start_line) |n| try editor.goToLine(n);
     noteRecoveryFile(&editor, init.io, path);
 
@@ -60,6 +61,16 @@ pub fn main(init: std.process.Init) !void {
         }
         std.process.exit(1);
     }
+}
+
+/// Whether `path` exists but can't be written by this user.
+fn isReadOnly(io: std.Io, path: []const u8) bool {
+    if (path.len == 0) return false;
+    std.Io.Dir.cwd().access(io, path, .{ .write = true }) catch |err| return switch (err) {
+        error.FileNotFound => false,
+        else => true,
+    };
+    return false;
 }
 
 /// Tells the user, in the status line, if a crash left a recovery file for
@@ -115,6 +126,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
             .mode = modeLabel(editor),
             .modified = editor.isModified(),
             .crlf = editor.crlf,
+            .readonly = editor.readonly,
             .command = if (editor.mode == .command) editor.command.items else null,
             .command_prefix = switch (editor.command_kind) {
                 .ex => ':',
@@ -155,6 +167,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
                         };
                         try editor.reloaded(fresh.buffer);
                         editor.crlf = fresh.crlf;
+                        editor.readonly = isReadOnly(init.io, reload_path);
                     },
                     .@"suspend" => {
                         term.suspendProcess();
