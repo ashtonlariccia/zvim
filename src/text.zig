@@ -60,6 +60,68 @@ pub fn isUnprintable(cp: u21) bool {
     return cp == replacement or (cp >= 0x80 and cp < 0xa0);
 }
 
+// Characters of a line. A character here includes the combining marks that
+// follow it, so the cursor never lands between a letter and its accent.
+
+/// Combining marks belong to the character before them.
+pub fn isMark(cp: u21) bool {
+    return cellWidth(cp, 0) == 0;
+}
+
+/// Start of the character after the one at `i` (a character includes its
+/// combining marks).
+pub fn nextChar(s: []const u8, i: usize) usize {
+    if (i >= s.len) return s.len;
+    var j = i + decode(s[i..]).len;
+    while (j < s.len and isMark(decode(s[j..]).cp)) j += decode(s[j..]).len;
+    return j;
+}
+
+/// Start of the character before `i`.
+pub fn prevChar(s: []const u8, i: usize) usize {
+    var j = prevStart(s, i);
+    while (j > 0 and isMark(decode(s[j..]).cp)) j = prevStart(s, j);
+    return j;
+}
+
+/// Display column where byte `i` of line `s` starts.
+pub fn displayCol(s: []const u8, i: usize) usize {
+    var col: usize = 0;
+    var j: usize = 0;
+    while (j < i) {
+        const ch = decode(s[j..]);
+        col += cellWidth(ch.cp, col);
+        j += ch.len;
+    }
+    return col;
+}
+
+/// Byte offset of the character covering display column `want`, or the end
+/// of the line if it is shorter.
+pub fn byteAtCol(s: []const u8, want: usize) usize {
+    var col: usize = 0;
+    var i: usize = 0;
+    while (i < s.len) {
+        const next = nextChar(s, i);
+        var j = i;
+        while (j < next) {
+            const ch = decode(s[j..]);
+            col += cellWidth(ch.cp, col);
+            j += ch.len;
+        }
+        if (col > want) return i;
+        i = next;
+    }
+    return s.len;
+}
+
+/// Byte offset of the first character that isn't a space or tab.
+pub fn firstNonBlank(s: []const u8) usize {
+    var i: usize = 0;
+    while (i < s.len and (s[i] == ' ' or s[i] == '\t')) i += 1;
+    return i;
+}
+
 fn inRanges(ranges: []const [2]u21, cp: u21) bool {
     var lo: usize = 0;
     var hi: usize = ranges.len;

@@ -1,4 +1,4 @@
-//! Cursor motions over lines of text, independent of the editor.
+//! Word motions and f/t/F/T over lines of text, independent of the editor.
 //!
 //! Lines are read through any `lines` value with `count() usize` and
 //! `get(line) ![]const u8` (a slice valid until the next `get`), so motions
@@ -7,68 +7,11 @@
 //! end of the line (on its newline, or the end of the text on the last line).
 
 const std = @import("std");
-const text = @import("text.zig");
+const text = @import("../text.zig");
+const nextChar = text.nextChar;
+const prevChar = text.prevChar;
 
 pub const Pos = struct { line: usize, byte: usize };
-
-/// Combining marks belong to the character before them.
-pub fn isMark(cp: u21) bool {
-    return text.cellWidth(cp, 0) == 0;
-}
-
-/// Start of the character after the one at `i` (a character includes its
-/// combining marks).
-pub fn nextChar(s: []const u8, i: usize) usize {
-    if (i >= s.len) return s.len;
-    var j = i + text.decode(s[i..]).len;
-    while (j < s.len and isMark(text.decode(s[j..]).cp)) j += text.decode(s[j..]).len;
-    return j;
-}
-
-/// Start of the character before `i`.
-pub fn prevChar(s: []const u8, i: usize) usize {
-    var j = text.prevStart(s, i);
-    while (j > 0 and isMark(text.decode(s[j..]).cp)) j = text.prevStart(s, j);
-    return j;
-}
-
-/// Display column where byte `i` of line `s` starts.
-pub fn displayCol(s: []const u8, i: usize) usize {
-    var col: usize = 0;
-    var j: usize = 0;
-    while (j < i) {
-        const ch = text.decode(s[j..]);
-        col += text.cellWidth(ch.cp, col);
-        j += ch.len;
-    }
-    return col;
-}
-
-/// Byte offset of the character covering display column `want`, or the end
-/// of the line if it is shorter.
-pub fn byteAtCol(s: []const u8, want: usize) usize {
-    var col: usize = 0;
-    var i: usize = 0;
-    while (i < s.len) {
-        const next = nextChar(s, i);
-        var j = i;
-        while (j < next) {
-            const ch = text.decode(s[j..]);
-            col += text.cellWidth(ch.cp, col);
-            j += ch.len;
-        }
-        if (col > want) return i;
-        i = next;
-    }
-    return s.len;
-}
-
-/// Byte offset of the first character that isn't a space or tab.
-pub fn firstNonBlank(s: []const u8) usize {
-    var i: usize = 0;
-    while (i < s.len and (s[i] == ' ' or s[i] == '\t')) i += 1;
-    return i;
-}
 
 /// Character classes for word motions: blanks (and line ends) separate
 /// words; letters, digits, '_' and non-ASCII characters form words;

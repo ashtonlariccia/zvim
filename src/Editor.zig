@@ -16,12 +16,12 @@ const Buffer = @import("Buffer.zig");
 const Key = @import("keys.zig").Key;
 const text = @import("text.zig");
 const History = @import("History.zig");
-const motion = @import("motion.zig");
-const nextChar = motion.nextChar;
-const prevChar = motion.prevChar;
-const displayCol = motion.displayCol;
-const byteAtCol = motion.byteAtCol;
-const firstNonBlank = motion.firstNonBlank;
+const motion = @import("editor/words.zig");
+const nextChar = text.nextChar;
+const prevChar = text.prevChar;
+const displayCol = text.displayCol;
+const byteAtCol = text.byteAtCol;
+const firstNonBlank = text.firstNonBlank;
 
 const Editor = @This();
 

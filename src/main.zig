@@ -129,5 +129,5 @@ test {
     _ = @import("keys.zig");
     _ = @import("Editor.zig");
     _ = @import("History.zig");
-    _ = @import("motion.zig");
+    _ = @import("editor/words.zig");
 }
