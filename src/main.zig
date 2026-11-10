@@ -321,6 +321,7 @@ fn writeUsage(w: *std.Io.Writer) !void {
     );
     try settings.writeList(w);
     try w.writeAll(
+        \\
         \\  With both number and relativenumber, the cursor's line shows its own
         \\  number.
         \\
