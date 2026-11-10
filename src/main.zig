@@ -82,11 +82,31 @@ fn noteRecoveryFile(editor: *Editor, io: std.Io, path: []const u8) void {
     editor.setMessage(true, "{s} exists: unsaved changes from a crash", .{recovery});
 }
 
+/// What the file on disk looked like when zvim last read or wrote it, to
+/// notice when something else changes it.
+const DiskStamp = struct {
+    mtime: i96,
+    size: u64,
+
+    fn of(io: std.Io, path: []const u8) ?DiskStamp {
+        if (path.len == 0) return null;
+        const st = std.Io.Dir.cwd().statFile(io, path, .{}) catch return null;
+        return .{ .mtime = st.mtime.nanoseconds, .size = st.size };
+    }
+
+    fn eql(a: ?DiskStamp, b: ?DiskStamp) bool {
+        const x = a orelse return b == null;
+        const y = b orelse return false;
+        return x.mtime == y.mtime and x.size == y.size;
+    }
+};
+
 fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
     var term = try Terminal.init();
     defer term.deinit();
     crash.install(editor, &term);
     defer crash.uninstall();
+    var disk = DiskStamp.of(init.io, editor.name.items);
 
     var out_buf: [16 * 1024]u8 = undefined;
     var out_file: std.Io.File.Writer = .initStreaming(.stdout(), init.io, &out_buf);
@@ -166,6 +186,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
                             continue;
                         };
                         try editor.reloaded(fresh.buffer);
+                        disk = DiskStamp.of(init.io, reload_path);
                         editor.crlf = fresh.crlf;
                         editor.readonly = isReadOnly(init.io, reload_path);
                     },
@@ -174,11 +195,20 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
                         size = Terminal.size();
                     },
                     .write => |write| {
+                        // Don't silently overwrite changes made by something else.
+                        const own_file = std.mem.eql(u8, write.path, editor.name.items);
+                        if (own_file and !write.force and disk != null and
+                            !DiskStamp.eql(disk, DiskStamp.of(init.io, write.path)))
+                        {
+                            editor.setMessage(true, "W12: {s} changed on disk since it was read (:w! to overwrite, :e! to reload)", .{write.path});
+                            continue;
+                        }
                         file.save(&editor.buffer, init.io, .cwd(), write.path, editor.crlf) catch |err| {
                             editor.writeFailed(write.path, err);
                             continue;
                         };
                         editor.wrote(write.path);
+                        if (own_file) disk = DiskStamp.of(init.io, write.path);
                         if (write.then_quit) return .quit;
                     },
                 }
