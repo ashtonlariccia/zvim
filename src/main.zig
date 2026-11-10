@@ -170,12 +170,17 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
     // at the start of `in_buf` for the rest, for up to `key_wait_ms`.
     var pending: usize = 0;
     var in_paste = false;
+    // When the message in the bottom row gives way to the status bar again.
+    var message_until = messageDeadline(init.io, editor);
     while (true) {
         if (editor.clipboard_pending) {
             editor.clipboard_pending = false;
             try copyToClipboard(init.gpa, out, editor.clipboard.items);
         }
-        try editor.scrollToCursor(ui.textRows(size), size.cols);
+        const nu = editor.settings.number;
+        const rnu = editor.settings.relativenumber;
+        const numbers: ui.Numbers = if (nu and rnu) .both else if (nu) .absolute else if (rnu) .relative else .none;
+        try editor.scrollToCursor(ui.textRows(size), ui.textCols(size, numbers, editor.buffer.visibleLineCount()));
         const pos = try editor.cursorPos();
         const selection: ?ui.Selection = if (try editor.selection()) |sel| .{
             .kind = switch (sel.kind) {
@@ -206,6 +211,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
                 .search_backward => '?',
             },
             .selection = selection,
+            .numbers = numbers,
             .message = if (editor.message.len > 0)
                 .{ .text = editor.message.text(), .is_error = editor.message.is_error }
             else
@@ -213,14 +219,24 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
         });
         try out.flush();
 
-        const event = try term.next(in_buf[pending..], if (pending > 0) key_wait_ms else null);
+        const wait: ?i32 = if (pending > 0)
+            key_wait_ms
+        else if (message_until) |until|
+            @intCast(std.math.clamp(until - std.Io.Timestamp.now(init.io, .awake).toMilliseconds(), 0, std.math.maxInt(i32)))
+        else
+            null;
+        const event = try term.next(in_buf[pending..], wait);
         var input: []const u8, var final = switch (event) {
             .resize => {
                 size = Terminal.size();
                 continue;
             },
             .hangup => return .hangup,
-            .timeout => .{ in_buf[0..pending], true },
+            .timeout => if (pending == 0) {
+                editor.message.len = 0;
+                message_until = null;
+                continue;
+            } else .{ in_buf[0..pending], true },
             .input => |bytes| .{ in_buf[0 .. pending + bytes.len], false },
         };
         while (true) {
@@ -277,6 +293,8 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
             pending = left.len;
             break;
         }
+        // Each key clears the message; one there now is new.
+        message_until = messageDeadline(init.io, editor);
     }
 }
 
@@ -298,11 +316,13 @@ fn writeUsage(w: *std.Io.Writer) !void {
         \\  -h, --help      show this help
         \\  -v, --version   show the version
         \\
-        \\SETTINGS                (short name, default)
+        \\SETTINGS                    (short name, default)
         \\
     );
     try settings.writeList(w);
     try w.writeAll(
+        \\  With both number and relativenumber, the cursor's line shows its own
+        \\  number.
         \\
         \\  They're read at startup from ~/.config/zvim/zvimrc (or
         \\  $XDG_CONFIG_HOME/zvim/zvimrc): set lines, any number of settings
@@ -334,6 +354,14 @@ fn writeUsage(w: *std.Io.Writer) !void {
         \\  Files are read as UTF-8.
         \\
     );
+}
+
+/// When a message just shown should go, by the messagetime setting: null
+/// for none, or one that stays until the next key.
+fn messageDeadline(io: std.Io, editor: *const Editor) ?i64 {
+    const ms = editor.settings.messagetime;
+    if (editor.message.len == 0 or ms == 0) return null;
+    return std.Io.Timestamp.now(io, .awake).toMilliseconds() + @as(i64, @intCast(ms));
 }
 
 /// How long to wait for the rest of a key whose first bytes arrived (an

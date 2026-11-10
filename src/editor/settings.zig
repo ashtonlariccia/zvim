@@ -22,6 +22,14 @@ pub const Settings = struct {
     tabstop: usize = 4,
     /// How many spaces, with `expandtab`.
     shiftwidth: usize = 4,
+    /// Line numbers down the left: each line's own...
+    number: bool = false,
+    /// ...or its distance from the cursor's line. With both, the cursor's
+    /// line shows its own number and the others their distance.
+    relativenumber: bool = false,
+    /// How long a message stays in the bottom row before the status bar
+    /// comes back, in milliseconds; 0 keeps it until the next key.
+    messagetime: usize = 1000,
 };
 
 pub const max_width = 32;
@@ -33,18 +41,32 @@ const Option = enum {
     expandtab,
     tabstop,
     shiftwidth,
+    number,
+    relativenumber,
+    messagetime,
 
-    const short = [_][]const u8{ "ic", "scs", "ai", "et", "ts", "sw" };
+    const short = [_][]const u8{ "ic", "scs", "ai", "et", "ts", "sw", "nu", "rnu", "mt" };
 
     /// For the settings file and --help.
     const about = [_][]const u8{
         "Searches ignore case...",
         "...unless the search has a capital letter in it",
-        "New lines start with the indentation of the line above",
+        "New lines copy the indentation of the line above",
         "Tab and > insert spaces instead of a tab",
         "How wide a tab looks on screen (1 to 32)",
         "How many spaces expandtab inserts (1 to 32)",
+        "Line numbers down the left...",
+        "...or each line's distance from the cursor",
+        "How long messages show, in ms (0: until a key)",
     };
+
+    /// The numbers a number setting takes.
+    fn range(option: Option) [2]usize {
+        return switch (option) {
+            .messagetime => .{ 0, 60_000 },
+            else => .{ 1, max_width },
+        };
+    }
 
     fn find(name: []const u8) ?Option {
         for (std.enums.values(Option), short) |option, alias| {
@@ -64,6 +86,9 @@ fn valueOf(settings: *Settings, option: Option) Value {
         .expandtab => .{ .flag = &settings.expandtab },
         .tabstop => .{ .number = &settings.tabstop },
         .shiftwidth => .{ .number = &settings.shiftwidth },
+        .number => .{ .flag = &settings.number },
+        .relativenumber => .{ .flag = &settings.relativenumber },
+        .messagetime => .{ .number = &settings.messagetime },
     };
 }
 
@@ -125,12 +150,13 @@ fn setOne(ed: *Editor, arg: []const u8) bool {
             flag.* = !off;
         },
         .number => |number| {
-            const n = if (off or eq == null) 0 else std.fmt.parseInt(usize, arg[eq.? + 1 ..], 10) catch 0;
-            if (n < 1 or n > max_width) {
-                ed.setMessage(true, "{s} takes a number from 1 to {d}: {s}", .{ @tagName(option), max_width, arg });
+            const min, const max = option.range();
+            const n = if (off or eq == null) null else std.fmt.parseInt(usize, arg[eq.? + 1 ..], 10) catch null;
+            if (n == null or n.? < min or n.? > max) {
+                ed.setMessage(true, "{s} takes a number from {d} to {d}: {s}", .{ @tagName(option), min, max, arg });
                 return false;
             }
-            number.* = n;
+            number.* = n.?;
         },
     }
     return true;
@@ -164,7 +190,7 @@ pub fn writeList(w: *std.Io.Writer) !void {
             .flag => |flag| if (flag.*) "on" else "off",
             .number => |number| std.fmt.bufPrint(&buf, "{d}", .{number.*}) catch unreachable,
         };
-        try w.print("  {s:<11} {s:<4} {s:<4} {s}\n", .{ @tagName(option), short, default, about });
+        try w.print("  {s:<14} {s:<3} {s:<4} {s}\n", .{ @tagName(option), short, default, about });
     }
 }
 
@@ -210,11 +236,15 @@ test "bad values are refused and leave the setting as it was" {
         .{ "set nots", "zvimrc line 1: tabstop takes a number from 1 to 32: nots" },
         .{ "set sw=33", "zvimrc line 1: shiftwidth takes a number from 1 to 32: sw=33" },
         .{ "set et=1", "zvimrc line 1: expandtab is on or off, not a number: et=1" },
+        .{ "set mt=60001", "zvimrc line 1: messagetime takes a number from 0 to 60000: mt=60001" },
     }) |case| {
         load(&e, case[0]);
         try testing.expectEqualStrings(case[1], e.message.text());
     }
     try testing.expectEqualDeep(Settings{}, e.settings);
+    load(&e, "set nu rnu mt=0");
+    try testing.expect(e.settings.number and e.settings.relativenumber);
+    try testing.expectEqual(@as(usize, 0), e.settings.messagetime);
 }
 
 test "the settings file zvim -s starts from lists every setting at its default" {
@@ -232,7 +262,7 @@ test "the settings file zvim -s starts from lists every setting at its default" 
         \\" ...unless the search has a capital letter in it
         \\set smartcase
         \\
-        \\" New lines start with the indentation of the line above
+        \\" New lines copy the indentation of the line above
         \\set autoindent
         \\
         \\" Tab and > insert spaces instead of a tab
@@ -243,6 +273,15 @@ test "the settings file zvim -s starts from lists every setting at its default" 
         \\
         \\" How many spaces expandtab inserts (1 to 32)
         \\set shiftwidth=4
+        \\
+        \\" Line numbers down the left...
+        \\set nonumber
+        \\
+        \\" ...or each line's distance from the cursor
+        \\set norelativenumber
+        \\
+        \\" How long messages show, in ms (0: until a key)
+        \\set messagetime=1000
         \\
     , w.buffered());
     // Loading it changes nothing.
@@ -258,12 +297,15 @@ test "the settings list for --help" {
     var w: std.Io.Writer = .fixed(&buf);
     try writeList(&w);
     try testing.expectEqualStrings(
-        \\  ignorecase  ic   on   Searches ignore case...
-        \\  smartcase   scs  on   ...unless the search has a capital letter in it
-        \\  autoindent  ai   on   New lines start with the indentation of the line above
-        \\  expandtab   et   off  Tab and > insert spaces instead of a tab
-        \\  tabstop     ts   4    How wide a tab looks on screen (1 to 32)
-        \\  shiftwidth  sw   4    How many spaces expandtab inserts (1 to 32)
+        \\  ignorecase     ic  on   Searches ignore case...
+        \\  smartcase      scs on   ...unless the search has a capital letter in it
+        \\  autoindent     ai  on   New lines copy the indentation of the line above
+        \\  expandtab      et  off  Tab and > insert spaces instead of a tab
+        \\  tabstop        ts  4    How wide a tab looks on screen (1 to 32)
+        \\  shiftwidth     sw  4    How many spaces expandtab inserts (1 to 32)
+        \\  number         nu  off  Line numbers down the left...
+        \\  relativenumber rnu off  ...or each line's distance from the cursor
+        \\  messagetime    mt  1000 How long messages show, in ms (0: until a key)
         \\
     , w.buffered());
 }

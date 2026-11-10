@@ -21,6 +21,7 @@ const sync_end = "\x1b[?2026l";
 const reverse = "\x1b[7m";
 const reset = "\x1b[m";
 const red = "\x1b[31m";
+const dim = "\x1b[90m"; // grey: line numbers other than the cursor's
 const hide_cursor = "\x1b[?25l";
 const show_cursor = "\x1b[?25h";
 
@@ -53,7 +54,29 @@ pub const View = struct {
     command_prefix: u8 = ':',
     /// The visual selection, drawn in reverse video.
     selection: ?Selection = null,
+    /// Line numbers down the left.
+    numbers: Numbers = .none,
 };
+
+pub const Numbers = enum {
+    none,
+    /// Each line's own number.
+    absolute,
+    /// Each line's distance from the cursor's line.
+    relative,
+    /// Distances, with the cursor's line showing its own number.
+    both,
+};
+
+/// Screen columns taken by line numbers: room for the largest number (at
+/// least 3 digits) and a space.
+fn gutterWidth(numbers: Numbers, line_count: usize) usize {
+    if (numbers == .none) return 0;
+    var digits: usize = 1;
+    var n = line_count;
+    while (n >= 10) : (n /= 10) digits += 1;
+    return @max(3, digits) + 1;
+}
 
 pub const Selection = struct {
     kind: enum { char, line, block },
@@ -118,15 +141,28 @@ pub fn draw(w: *std.Io.Writer, size: Size, view: View) !void {
 
     const cols: usize = size.cols;
     const lines = view.buffer.visibleLineCount();
+    const gutter = textGutter(size, view.numbers, lines);
 
     for (0..textRows(size)) |r| {
         try w.print("\x1b[{d};1H", .{r + 1});
         const line = view.top + r;
         var used: usize = 0;
         if (line < lines) {
+            if (gutter > 0) {
+                const here = line == view.cursor.line;
+                const number = switch (view.numbers) {
+                    .none => unreachable,
+                    .absolute => line + 1,
+                    .relative => if (line > view.cursor.line) line - view.cursor.line else view.cursor.line - line,
+                    .both => if (here) line + 1 else if (line > view.cursor.line) line - view.cursor.line else view.cursor.line - line,
+                };
+                if (!here) try w.writeAll(dim);
+                try w.print("{d: >[1]} ", .{ number, gutter - 1 });
+                if (!here) try w.writeAll(reset);
+            }
             var chars = lineChars(view.buffer, line);
             const hl: Highlight = if (view.selection) |sel| sel.highlight(line) else .{};
-            used = try drawCharsHighlighted(w, &chars, view.left, cols, hl);
+            used = gutter + try drawCharsHighlighted(w, &chars, view.left, cols - gutter, hl, gutter);
         } else if (cols > 0) {
             try w.writeAll("~");
             used = 1;
@@ -164,12 +200,24 @@ pub fn draw(w: *std.Io.Writer, size: Size, view: View) !void {
     // Show the cursor only when it is on screen.
     const c = view.cursor;
     if (c.line >= view.top and c.line - view.top < textRows(size) and
-        c.col >= view.left and c.col - view.left < cols)
+        c.col >= view.left and c.col - view.left < cols - gutter)
     {
-        try w.print("\x1b[{d};{d}H", .{ c.line - view.top + 1, c.col - view.left + 1 });
+        try w.print("\x1b[{d};{d}H", .{ c.line - view.top + 1, gutter + c.col - view.left + 1 });
         try w.writeAll(view.cursor_shape.sequence());
         try w.writeAll(show_cursor);
     }
+}
+
+/// Screen columns taken by line numbers, if the window is wide enough to
+/// show them and some text.
+fn textGutter(size: Size, numbers: Numbers, line_count: usize) usize {
+    const gutter = gutterWidth(numbers, line_count);
+    return if (gutter < size.cols) gutter else 0;
+}
+
+/// Screen columns left for text.
+pub fn textCols(size: Size, numbers: Numbers, line_count: usize) usize {
+    return size.cols - textGutter(size, numbers, line_count);
 }
 
 pub fn textRows(size: Size) usize {
@@ -287,11 +335,12 @@ fn lineChars(buffer: *const Buffer, line: usize) BufferChars {
 /// and returns the screen columns used. A character cut by either edge is
 /// shown as blanks. With a null writer it only measures.
 fn drawChars(w: ?*std.Io.Writer, chars: anytype, left: usize, max_cols: usize) !usize {
-    return drawCharsHighlighted(w, chars, left, max_cols, .{});
+    return drawCharsHighlighted(w, chars, left, max_cols, .{}, 0);
 }
 
-/// `drawChars` with the columns in `hl` in reverse video.
-fn drawCharsHighlighted(w: ?*std.Io.Writer, chars: anytype, left: usize, max_cols: usize, hl: Highlight) !usize {
+/// `drawChars` with the columns in `hl` in reverse video, starting `origin`
+/// columns from the left edge of the screen.
+fn drawCharsHighlighted(w: ?*std.Io.Writer, chars: anytype, left: usize, max_cols: usize, hl: Highlight, origin: usize) !usize {
     const right = left + max_cols;
     var col: usize = 0; // display column in the line
     var used: usize = 0; // screen columns written
@@ -326,7 +375,7 @@ fn drawCharsHighlighted(w: ?*std.Io.Writer, chars: anytype, left: usize, max_col
             const vis_end = @min(end, right);
             if (w) |out| {
                 try setReverse(out, &reversed, hl.covers(start));
-                if (resync) try out.print("\x1b[{d}G", .{vis_start - left + 1});
+                if (resync) try out.print("\x1b[{d}G", .{origin + vis_start - left + 1});
                 try out.splatByteAll(' ', vis_end - vis_start);
             }
             used = vis_end - left;
@@ -336,7 +385,7 @@ fn drawCharsHighlighted(w: ?*std.Io.Writer, chars: anytype, left: usize, max_col
 
         if (w) |out| {
             try setReverse(out, &reversed, hl.covers(start));
-            if (resync) try out.print("\x1b[{d}G", .{start - left + 1});
+            if (resync) try out.print("\x1b[{d}G", .{origin + start - left + 1});
             if (g.cp == '\t') {
                 try out.splatByteAll(' ', cw);
             } else if (g.cp < 0x20 or g.cp == 0x7f) {
@@ -357,7 +406,7 @@ fn drawCharsHighlighted(w: ?*std.Io.Writer, chars: anytype, left: usize, max_col
     if (ended and (hl.line_end or (hl.end_if_covered and hl.covers(col))) and col >= left and col < right) {
         if (w) |out| {
             try setReverse(out, &reversed, true);
-            if (resync) try out.print("\x1b[{d}G", .{col - left + 1});
+            if (resync) try out.print("\x1b[{d}G", .{origin + col - left + 1});
             try out.writeAll(" ");
         }
         used = col - left + 1;
@@ -683,6 +732,35 @@ test "lines longer than any copy buffer show their end" {
     var b: Buffer = try .init(gpa, long);
     defer b.deinit();
     try expectScreen(2, 10, .{ .buffer = &b, .name = "", .top = 0, .left = 9_990 }, .{ "aaaaaaaEND", "     Ln 1" });
+}
+
+test "line numbers: own, relative, or both, in a gutter as wide as needed" {
+    var b: Buffer = try .init(testing.allocator, "a\tb\n中x\nthree\n");
+    defer b.deinit();
+    const view: View = .{ .buffer = &b, .name = "", .top = 0, .cursor = .{ .line = 1, .col = 2 }, .numbers = .absolute };
+    try expectScreen(5, 12, view, .{ "  1 a   b", "  2 中x", "  3 three", "~", " [new] Ln 2" });
+    var relative = view;
+    relative.numbers = .relative;
+    try expectScreen(5, 12, relative, .{ "  1 a   b", "  0 中x", "  1 three", "~", " [new] Ln 2" });
+    var both = view;
+    both.numbers = .both;
+    try expectScreen(5, 12, both, .{ "  1 a   b", "  2 中x", "  1 three", "~", " [new] Ln 2" });
+
+    // The cursor and any resync after a wide character are moved past it.
+    var buf: [4096]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try draw(&w, .{ .rows = 5, .cols = 12 }, view);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "\x1b[7G") != null); // after 中
+    try testing.expect(std.mem.endsWith(u8, w.buffered(), "\x1b[2;7H\x1b[2 q" ++ show_cursor ++ sync_end));
+
+    // No room for numbers and text: no numbers.
+    try expectScreen(2, 4, view, .{ "a", "Ln 2" });
+}
+
+test "the gutter grows with the line count" {
+    try testing.expectEqual(@as(usize, 0), gutterWidth(.none, 5));
+    try testing.expectEqual(@as(usize, 4), gutterWidth(.absolute, 999));
+    try testing.expectEqual(@as(usize, 5), gutterWidth(.relative, 1000));
 }
 
 test "a character split across two pieces is read whole" {

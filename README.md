@@ -30,6 +30,9 @@ first writing one that lists every setting at its default if there isn't one.
     set tabstop=4              " how wide a tab looks
     set noexpandtab            " Tab and > insert a tab...
     set shiftwidth=4           " ...or this many spaces, with expandtab
+    set nonumber               " line numbers down the left...
+    set norelativenumber       " ...or distances from the cursor's line
+    set messagetime=1000       " ms a message shows before the status bar returns
 
 A bad line is skipped and reported when zvim starts.
 
