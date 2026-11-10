@@ -6,7 +6,6 @@ const Allocator = std.mem.Allocator;
 const Editor = @import("../Editor.zig");
 const Key = @import("../keys.zig").Key;
 const text = @import("../text.zig");
-const words = @import("words.zig");
 const nextChar = text.nextChar;
 const prevChar = text.prevChar;
 const firstNonBlank = text.firstNonBlank;
@@ -95,10 +94,7 @@ pub fn normalKey(ed: *Editor, key: Key) !void {
             'c' => return operatorKey(ed, .change),
             '>' => return operatorKey(ed, .indent),
             '<' => return operatorKey(ed, .outdent),
-            'g' => {
-                ed.pending.wait = .g;
-                return;
-            },
+            'g' => return waitFor(ed, .g),
             'f' => return waitFor(ed, .{ .find = .to }),
             't' => return waitFor(ed, .{ .find = .till }),
             'F' => return waitFor(ed, .{ .find = .back_to }),
@@ -228,7 +224,7 @@ fn applyObject(ed: *Editor, key: Key, around: bool) !void {
                 }
                 ed.visual_anchor = r.start;
                 ed.cursor = try lastCharBefore(ed, r.end);
-                if (ed.visual_kind != .char) ed.visual_kind = .char;
+                ed.visual_kind = .char;
             },
             .lines => |r| {
                 ed.visual_anchor = ed.buffer.lineStart(r.first);
@@ -263,7 +259,7 @@ fn lastCharBefore(ed: *Editor, end: usize) !usize {
     return end - (p.byte - prevChar(try ed.lineText(p.line), p.byte));
 }
 
-pub fn waitFor(ed: *Editor, wait: Editor.Pending.Wait) void {
+fn waitFor(ed: *Editor, wait: Editor.Pending.Wait) void {
     ed.pending.wait = wait;
 }
 

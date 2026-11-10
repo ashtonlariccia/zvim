@@ -5,7 +5,6 @@ const std = @import("std");
 const Editor = @import("../Editor.zig");
 const Key = @import("../keys.zig").Key;
 const text = @import("../text.zig");
-const words = @import("words.zig");
 const normal = @import("normal.zig");
 const motions = @import("motions.zig");
 const settings = @import("settings.zig");
@@ -63,7 +62,7 @@ pub fn runCommand(ed: *Editor) !Editor.Action {
     if (bang) rest = rest[1..];
     const arg = std.mem.trim(u8, rest, " \t");
 
-    if (cmd.len == 0 and line.len == 0) return .none;
+    if (line.len == 0) return .none;
 
     // :42 and :$ go to a line.
     if (std.mem.eql(u8, line, "$")) {
@@ -111,9 +110,7 @@ pub fn runCommand(ed: *Editor) !Editor.Action {
             return .none;
         }
         // Like Vim, a file always ends with a newline when written.
-        var tail = ed.buffer.chunksFrom(ed.buffer.len -| 1);
-        const last = if (tail.next()) |chunk| chunk[0] else '\n';
-        if (last != '\n') try ed.insertBytes(ed.buffer.len, "\n");
+        if (ed.buffer.len > 0 and !ed.endsWithNewline()) try ed.insertBytes(ed.buffer.len, "\n");
         return .{ .write = .{ .path = path, .then_quit = write_quit, .force = bang } };
     }
     if (std.mem.eql(u8, cmd, "q") and arg.len == 0) {

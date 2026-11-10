@@ -144,8 +144,6 @@ fn bracketed(ed: *Editor, open_c: u8, close_c: u8, around: bool, count: usize) !
         // On a bracket of this kind, that's the innermost pair.
         if (level == 0 and all[from] == open_c) {
             open = from;
-        } else if (level == 0 and all[from] == close_c) {
-            open = matchBackward(all, from, open_c, close_c) orelse return null;
         } else {
             open = matchBackward(all, from, open_c, close_c) orelse return null;
         }
