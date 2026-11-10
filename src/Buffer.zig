@@ -6,8 +6,10 @@
 //! Pieces are a flat list for now: finding a position is linear in the number
 //! of edits, not the size of the text.
 //!
-//! Each piece also records how many newlines it contains, so finding a line
-//! only scans the text of the one piece the line starts in.
+//! Each piece records how many newlines it contains, and the offsets of all
+//! newlines in `original` and in `add` are kept in sorted lists, so finding a
+//! line or counting the newlines in part of a piece is a binary search, not a
+//! scan. Opening a large file costs one pass to build the list.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -22,6 +24,10 @@ pieces: std.ArrayList(Piece) = .empty,
 len: usize,
 /// Total newlines in the text; the line count is one more.
 newlines: usize,
+/// Offsets of every newline in `original`, ascending.
+original_newlines: []const usize,
+/// Offsets of every newline in `add`, ascending.
+add_newlines: std.ArrayList(usize) = .empty,
 
 const Piece = struct {
     src: enum { original, add },
@@ -41,7 +47,15 @@ pub fn init(gpa: Allocator, text: []const u8) !Buffer {
 /// allocated with `gpa`. On error the caller still owns `text`.
 pub fn initOwned(gpa: Allocator, text: []const u8) !Buffer {
     const newlines = countNewlines(text);
-    var self: Buffer = .{ .gpa = gpa, .original = text, .len = text.len, .newlines = newlines };
+    const offsets = try gpa.alloc(usize, newlines);
+    errdefer gpa.free(offsets);
+    var n: usize = 0;
+    var from: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, text, from, '\n')) |i| : (from = i + 1) {
+        offsets[n] = i;
+        n += 1;
+    }
+    var self: Buffer = .{ .gpa = gpa, .original = text, .len = text.len, .newlines = newlines, .original_newlines = offsets };
     if (text.len > 0) try self.pieces.append(gpa, .{
         .src = .original,
         .start = 0,
@@ -53,7 +67,9 @@ pub fn initOwned(gpa: Allocator, text: []const u8) !Buffer {
 
 pub fn deinit(self: *Buffer) void {
     self.gpa.free(self.original);
+    self.gpa.free(self.original_newlines);
     self.add.deinit(self.gpa);
+    self.add_newlines.deinit(self.gpa);
     self.pieces.deinit(self.gpa);
     self.* = undefined;
 }
@@ -64,10 +80,16 @@ pub fn insert(self: *Buffer, pos: usize, bytes: []const u8) !void {
     if (bytes.len == 0) return;
 
     const add_start = self.add.items.len;
+    const newlines = countNewlines(bytes);
     try self.add.appendSlice(self.gpa, bytes);
     errdefer self.add.shrinkRetainingCapacity(add_start);
+    const index_start = self.add_newlines.items.len;
+    try self.add_newlines.ensureUnusedCapacity(self.gpa, newlines);
+    errdefer self.add_newlines.shrinkRetainingCapacity(index_start);
+    for (bytes, add_start..) |c, i| {
+        if (c == '\n') self.add_newlines.appendAssumeCapacity(i);
+    }
 
-    const newlines = countNewlines(bytes);
     const loc = self.locate(pos);
     const new: Piece = .{ .src = .add, .start = add_start, .len = bytes.len, .newlines = newlines };
     if (loc.offset == 0) {
@@ -140,13 +162,9 @@ pub fn lineStart(self: *const Buffer, line: usize) usize {
     var seen: usize = 0;
     for (self.pieces.items) |p| {
         if (seen + p.newlines >= line) {
-            const bytes = self.pieceBytes(p);
-            var i: usize = 0;
-            while (true) : (i += 1) {
-                if (bytes[i] != '\n') continue;
-                seen += 1;
-                if (seen == line) return start + i + 1;
-            }
+            const offsets = self.newlineOffsets(p.src);
+            const nl = offsets[firstAtOrAfter(offsets, p.start) + (line - seen) - 1];
+            return start + (nl - p.start) + 1;
         }
         start += p.len;
         seen += p.newlines;
@@ -161,7 +179,10 @@ pub fn lineOf(self: *const Buffer, pos: usize) usize {
     const loc = self.locate(pos);
     var line: usize = 0;
     for (self.pieces.items[0..loc.index]) |p| line += p.newlines;
-    if (loc.offset > 0) line += countNewlines(self.pieceBytes(self.pieces.items[loc.index])[0..loc.offset]);
+    if (loc.offset > 0) {
+        const p = self.pieces.items[loc.index];
+        line += self.newlinesIn(p.src, p.start, p.start + loc.offset);
+    }
     return line;
 }
 
@@ -225,19 +246,37 @@ fn pieceBytes(self: *const Buffer, p: Piece) []const u8 {
     return src[p.start..][0..p.len];
 }
 
-/// Splits `p` at `offset` (0 < offset < p.len). Only the shorter half is
-/// scanned for newlines; the other half's count follows from the total.
+/// Splits `p` at `offset` (0 < offset < p.len).
 fn split(self: *const Buffer, p: Piece, offset: usize) [2]Piece {
     assert(offset > 0 and offset < p.len);
-    const bytes = self.pieceBytes(p);
-    const left_newlines = if (offset <= p.len / 2)
-        countNewlines(bytes[0..offset])
-    else
-        p.newlines - countNewlines(bytes[offset..]);
+    const left_newlines = self.newlinesIn(p.src, p.start, p.start + offset);
     return .{
         .{ .src = p.src, .start = p.start, .len = offset, .newlines = left_newlines },
         .{ .src = p.src, .start = p.start + offset, .len = p.len - offset, .newlines = p.newlines - left_newlines },
     };
+}
+
+fn newlineOffsets(self: *const Buffer, src: @FieldType(Piece, "src")) []const usize {
+    return switch (src) {
+        .original => self.original_newlines,
+        .add => self.add_newlines.items,
+    };
+}
+
+/// Index of the first offset in `offsets` that is at least `pos`.
+fn firstAtOrAfter(offsets: []const usize, pos: usize) usize {
+    const S = struct {
+        fn before(target: usize, offset: usize) bool {
+            return offset < target;
+        }
+    };
+    return std.sort.partitionPoint(usize, offsets, pos, S.before);
+}
+
+/// Newlines in bytes [start, end) of `src`.
+fn newlinesIn(self: *const Buffer, src: @FieldType(Piece, "src"), start: usize, end: usize) usize {
+    const offsets = self.newlineOffsets(src);
+    return firstAtOrAfter(offsets, end) - firstAtOrAfter(offsets, start);
 }
 
 fn countNewlines(bytes: []const u8) usize {
