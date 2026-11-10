@@ -24,8 +24,6 @@ const operators = @import("editor/operators.zig");
 const visual = @import("editor/visual.zig");
 const insert = @import("editor/insert.zig");
 const Settings = @import("editor/settings.zig").Settings;
-const help_page = @import("editor/help.zig");
-const pages = @import("editor/page.zig");
 const prevChar = text.prevChar;
 const displayCol = text.displayCol;
 
@@ -87,15 +85,6 @@ crlf: bool = false,
 /// mode or pressing Enter again removes that indentation.
 autoindent_at: ?usize = null,
 settings: Settings = .{},
-/// A page open over the text (help, settings): it gets the keys and is
-/// what's shown (see page.zig).
-page: ?*Editor = null,
-/// This editor is such a page.
-is_page: bool = false,
-/// This editor is the help page: nothing may change its text.
-view_only: bool = false,
-/// \settings was typed: the next action is `open_settings`.
-settings_requested: bool = false,
 /// Ctrl-Z was pressed; `handleKey` returns `.suspend`.
 suspend_requested: bool = false,
 /// The last key's command couldn't run (a motion with nowhere to go, or a
@@ -124,8 +113,7 @@ pub const blanks: [@import("editor/settings.zig").max_width]u8 = @splat(' ');
 
 pub const VisualKind = enum { char, line, block };
 
-/// `zvim` is the \ command line, for zvim's own commands (see settings.zig).
-pub const CommandKind = enum { ex, zvim, search_forward, search_backward };
+pub const CommandKind = enum { ex, search_forward, search_backward };
 
 pub const Message = struct {
     buf: [256]u8 = undefined,
@@ -198,8 +186,6 @@ pub const Action = union(enum) {
     @"suspend",
     /// Load the file at `path` again and hand it to `reloaded`.
     reload: []const u8,
-    /// \settings: read the settings file and hand it to `settings.openPage`.
-    open_settings,
 };
 
 pub fn init(gpa: Allocator, buffer: Buffer, name: []const u8) !Editor {
@@ -209,7 +195,6 @@ pub fn init(gpa: Allocator, buffer: Buffer, name: []const u8) !Editor {
 }
 
 pub fn deinit(self: *Editor) void {
-    pages.close(self);
     const gpa = self.gpa;
     self.buffer.deinit();
     self.history.deinit(gpa);
@@ -347,8 +332,6 @@ pub fn handleKey(self: *Editor, key: Key) Allocator.Error!Action {
     self.message.len = 0;
     self.failed = false;
 
-    if (self.page != null) return pages.key(self, key);
-
     if (!self.dot.replaying) {
         if (self.mode == .normal and self.pending.isEmpty()) {
             self.dot.recording.clearRetainingCapacity();
@@ -359,7 +342,6 @@ pub fn handleKey(self: *Editor, key: Key) Allocator.Error!Action {
     }
 
     if (key == .paste) {
-        if (self.view_only) return self.refuseChange();
         try insert.pasteText(self, key.paste);
         // `.` can't replay a paste (its text isn't kept), so it repeats the
         // change before instead.
@@ -399,10 +381,6 @@ pub fn handleKey(self: *Editor, key: Key) Allocator.Error!Action {
         self.setMessage(true, "W10: Warning: Changing a readonly file", .{});
     }
 
-    if (self.settings_requested) {
-        self.settings_requested = false;
-        return .open_settings;
-    }
     if (self.suspend_requested) {
         self.suspend_requested = false;
         self.dot.excluded = true;
@@ -503,14 +481,6 @@ pub fn toOffset(self: *Editor, p: words.Pos) usize {
 pub fn toPos(self: *Editor, offset: usize) words.Pos {
     const line = self.buffer.lineOf(offset);
     return .{ .line = line, .byte = offset - self.buffer.lineStart(line) };
-}
-
-/// A key that would change the text of the help page: refused.
-pub fn refuseChange(self: *Editor) Action {
-    self.pending = .{};
-    self.failed = true;
-    self.setMessage(true, help_page.refusal, .{});
-    return .none;
 }
 
 /// Called after a yank: the register goes to the system clipboard.
@@ -644,8 +614,6 @@ test {
     _ = insert;
     _ = @import("editor/textobjects.zig");
     _ = @import("editor/settings.zig");
-    _ = @import("editor/help.zig");
-    _ = @import("editor/page.zig");
     _ = h;
 }
 
@@ -727,14 +695,6 @@ fn checkInvariants(e: *Editor) !void {
 }
 
 test "random key sequences keep the editor consistent and fully undoable" {
-    try stress(false);
-}
-
-test "random key sequences never change a view-only editor (the help page)" {
-    try stress(true);
-}
-
-fn stress(view_only: bool) !void {
     // Every key the editor knows, plus multi-key commands, weighted toward
     // short, common ones. Each step picks one and checks the invariants.
     const pool = [_][]const u8{
@@ -768,7 +728,6 @@ fn stress(view_only: bool) !void {
         var e = try testEditor(original);
         defer e.deinit();
         e.view_rows = 5;
-        e.view_only = view_only;
         var picked: [STRESS_KEYS]usize = undefined;
         for (0..STRESS_KEYS) |step| {
             picked[step] = rand.uintLessThan(usize, pool.len);
@@ -777,7 +736,7 @@ fn stress(view_only: bool) !void {
             if (TRACE_RUN != null) std.debug.print("step {d}: {f}\n", .{ step, std.zig.fmtString(keys) });
             while (d.next()) |key| {
                 _ = try e.handleKey(key);
-                (if (view_only and (e.isModified() or e.mode == .insert)) error.Changed else checkInvariants(&e)) catch |err| {
+                checkInvariants(&e) catch |err| {
                     std.debug.print("keys:", .{});
                     for (picked[0 .. step + 1]) |k| std.debug.print(" {f}", .{std.zig.fmtString(pool[k])});
                     std.debug.print("\n", .{});
@@ -788,10 +747,6 @@ fn stress(view_only: bool) !void {
         // Back to normal mode, then undo everything.
         _ = try e.handleKey(.escape);
         _ = try e.handleKey(.escape);
-        if (view_only) {
-            try expectText(&e, original);
-            continue;
-        }
         for (0..1000) |_| _ = try e.handleKey(.{ .char = 'u' });
         try expectText(&e, original);
     }

@@ -22,24 +22,6 @@ pub fn keyChar(key: Key) ?u21 {
     };
 }
 
-/// Whether `key`, where a command can start, is one that changes the text:
-/// what the help page refuses. Moving, yanking, selecting and `:` are left.
-fn changesText(ed: *const Editor, key: Key) bool {
-    const in_visual = ed.mode == .visual;
-    return switch (key) {
-        .delete => true,
-        .ctrl => |c| c == 'r',
-        .char => |c| switch (c) {
-            'd', 'c', '>', '<', 'r', 'x', 'X', 's', 'S', 'D', 'C', 'p', 'P', 'J', 'u', '.', 'I', 'A' => true,
-            // In visual mode (and after y) these are text objects or "other end".
-            'i', 'a' => !in_visual and ed.pending.op == null,
-            'o', 'O' => !in_visual,
-            else => false,
-        },
-        else => false,
-    };
-}
-
 pub fn normalKey(ed: *Editor, key: Key) !void {
     switch (ed.pending.wait) {
         .none => {},
@@ -82,10 +64,6 @@ pub fn normalKey(ed: *Editor, key: Key) !void {
 
     if (motions.motionFor(key)) |m| return motions.doMotion(ed, m);
 
-    if (ed.view_only and changesText(ed, key)) {
-        _ = ed.refuseChange();
-        return;
-    }
     switch (key) {
         .char => |c| switch (c) {
             'd' => return operatorKey(ed, .delete),
@@ -183,13 +161,6 @@ pub fn normalKey(ed: *Editor, key: Key) !void {
             ':' => if (!in_visual) {
                 ed.dot.excluded = true;
                 cmdline.openCommandLine(ed, .ex);
-            },
-            // zvim's own commands; a key Vim leaves unused.
-            '\\' => if (ed.is_page) {
-                ed.setMessage(true, "\\ commands work in your file, not on this page (:q goes back)", .{});
-            } else if (!in_visual) {
-                ed.dot.excluded = true;
-                cmdline.openCommandLine(ed, .zvim);
             },
             else => {},
         },

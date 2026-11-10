@@ -44,7 +44,7 @@ pub fn width(cp: u21) u2 {
 }
 
 /// How wide a tab is on screen (the `tabstop` setting).
-pub var tab_width: usize = 8;
+pub var tab_width: usize = 4;
 
 /// Columns `cp` takes on screen when it starts at display column `col`:
 /// tabs reach the next tab stop, control characters show as ^X, and

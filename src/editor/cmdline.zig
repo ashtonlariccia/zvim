@@ -1,5 +1,4 @@
-//! The command line: `:` commands, `\` commands (zvim's own, see
-//! settings.zig) and `/` `?` searches.
+//! The command line: `:` commands and `/` `?` searches.
 
 const std = @import("std");
 const Editor = @import("../Editor.zig");
@@ -39,7 +38,6 @@ pub fn commandKey(ed: *Editor, key: Key) !Editor.Action {
             ed.mode = ed.command_return;
             switch (ed.command_kind) {
                 .ex => return runCommand(ed),
-                .zvim => _ = try settings.runLine(ed, ed.command.items),
                 .search_forward, .search_backward => try runSearch(ed),
             }
         },

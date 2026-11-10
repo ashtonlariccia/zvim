@@ -6,7 +6,6 @@ const Editor = @import("Editor.zig");
 const Decoder = @import("keys.zig").Decoder;
 const crash = @import("crash.zig");
 const settings = @import("editor/settings.zig");
-const pages = @import("editor/page.zig");
 const build_options = @import("build_options");
 
 /// On a crash, save unsaved changes and restore the terminal first.
@@ -18,24 +17,32 @@ pub fn main(init: std.process.Init) !void {
     // +N opens at line N, + at the last line.
     var start_line: ?usize = null;
     var clean = false;
+    var open_settings = false;
     for (args[1..]) |arg| {
         const help_flag = std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
         const version_flag = std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v");
         if (help_flag or version_flag) {
             var buf: [1024]u8 = undefined;
             var stdout: std.Io.File.Writer = .initStreaming(.stdout(), init.io, &buf);
-            if (help_flag) try stdout.interface.writeAll(usage) else try stdout.interface.print("zvim {s}\n", .{build_options.version});
+            if (help_flag) try writeUsage(&stdout.interface) else try stdout.interface.print("zvim {s}\n", .{build_options.version});
             try stdout.interface.flush();
             return;
         }
         if (std.mem.eql(u8, arg, "--clean") or std.mem.eql(u8, arg, "-c")) {
             clean = true;
+        } else if (std.mem.eql(u8, arg, "--settings") or std.mem.eql(u8, arg, "-s")) {
+            open_settings = true;
         } else if (arg.len > 0 and arg[0] == '+') {
             start_line = if (arg.len == 1) std.math.maxInt(usize) else std.fmt.parseInt(usize, arg[1..], 10) catch
                 fatal("not a line number: {s}", .{arg});
         } else if (path.len == 0) {
             path = arg;
-        } else fatal("usage: zvim [-c] [+line] [file]", .{});
+        } else fatal(short_usage, .{});
+    }
+    if (open_settings) {
+        if (path.len > 0) fatal(short_usage, .{});
+        path = settingsPath(init) orelse fatal("no home directory to keep settings in", .{});
+        try createSettingsFile(init, path);
     }
 
     const loaded: file.Loaded = if (path.len > 0)
@@ -79,6 +86,20 @@ fn loadSettings(init: std.process.Init, editor: *Editor) void {
         return;
     };
     settings.load(editor, contents);
+}
+
+/// For zvim -s: when there's no settings file yet, writes one listing
+/// every setting at its default.
+fn createSettingsFile(init: std.process.Init, path: []const u8) !void {
+    const cwd = std.Io.Dir.cwd();
+    if (std.fs.path.dirname(path)) |dir| cwd.createDirPath(init.io, dir) catch |err|
+        fatal("cannot create {s}: {s}", .{ dir, @errorName(err) });
+    var out: std.Io.Writer.Allocating = .init(init.arena.allocator());
+    try settings.template(&out.writer);
+    cwd.writeFile(init.io, .{ .sub_path = path, .data = out.written(), .flags = .{ .exclusive = true } }) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => fatal("cannot create {s}: {s}", .{ path, @errorName(err) }),
+    };
 }
 
 /// A settings file larger than this isn't read.
@@ -154,11 +175,9 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
             editor.clipboard_pending = false;
             try copyToClipboard(init.gpa, out, editor.clipboard.items);
         }
-        // A page (help, settings), while open, is what's on screen.
-        const shown = editor.page orelse editor;
-        try shown.scrollToCursor(ui.textRows(size), size.cols);
-        const pos = try shown.cursorPos();
-        const selection: ?ui.Selection = if (try shown.selection()) |sel| .{
+        try editor.scrollToCursor(ui.textRows(size), size.cols);
+        const pos = try editor.cursorPos();
+        const selection: ?ui.Selection = if (try editor.selection()) |sel| .{
             .kind = switch (sel.kind) {
                 .char => .char,
                 .line => .line,
@@ -170,26 +189,25 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
             .end_col = sel.end_col,
         } else null;
         try ui.draw(out, size, .{
-            .buffer = &shown.buffer,
-            .name = shown.name.items,
-            .top = shown.top,
-            .left = shown.left,
+            .buffer = &editor.buffer,
+            .name = editor.name.items,
+            .top = editor.top,
+            .left = editor.left,
             .cursor = .{ .line = pos.line, .col = pos.col },
-            .cursor_shape = if (shown.mode == .insert) .bar else .block,
-            .mode = modeLabel(shown),
-            .modified = shown.isModified(),
-            .crlf = shown.crlf,
-            .readonly = shown.readonly,
-            .command = if (shown.mode == .command) shown.command.items else null,
-            .command_prefix = switch (shown.command_kind) {
+            .cursor_shape = if (editor.mode == .insert) .bar else .block,
+            .mode = modeLabel(editor),
+            .modified = editor.isModified(),
+            .crlf = editor.crlf,
+            .readonly = editor.readonly,
+            .command = if (editor.mode == .command) editor.command.items else null,
+            .command_prefix = switch (editor.command_kind) {
                 .ex => ':',
-                .zvim => '\\',
                 .search_forward => '/',
                 .search_backward => '?',
             },
             .selection = selection,
-            .message = if (shown.message.len > 0)
-                .{ .text = shown.message.text(), .is_error = shown.message.is_error }
+            .message = if (editor.message.len > 0)
+                .{ .text = editor.message.text(), .is_error = editor.message.is_error }
             else
                 null,
         });
@@ -228,32 +246,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
                         term.suspendProcess();
                         size = Terminal.size();
                     },
-                    .open_settings => {
-                        const path = settingsPath(init) orelse {
-                            editor.setMessage(true, "No home directory to keep settings in", .{});
-                            continue;
-                        };
-                        const contents: ?[]u8 = std.Io.Dir.cwd().readFileAlloc(init.io, path, init.gpa, .limited(max_settings_bytes)) catch |err| switch (err) {
-                            error.FileNotFound => null,
-                            else => {
-                                editor.setMessage(true, "E484: Can't read {s}: {s}", .{ path, @errorName(err) });
-                                continue;
-                            },
-                        };
-                        defer if (contents) |c| init.gpa.free(c);
-                        try settings.openPage(editor, path, contents);
-                    },
                     .write => |write| {
-                        // A page being saved: the settings file.
-                        if (editor.page) |page| {
-                            if (std.fs.path.dirname(write.path)) |dir| std.Io.Dir.cwd().createDirPath(init.io, dir) catch {};
-                            file.save(&page.buffer, init.io, .cwd(), write.path, false) catch |err| {
-                                page.writeFailed(write.path, err);
-                                continue;
-                            };
-                            try pages.wrote(editor, write.path, write.then_quit);
-                            continue;
-                        }
                         // Don't silently overwrite changes made by something else.
                         const own_file = std.mem.eql(u8, write.path, editor.name.items);
                         if (own_file and !write.force and disk != null and
@@ -287,30 +280,61 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
     }
 }
 
-const usage =
-    \\usage: zvim [-c] [+line] [file]
-    \\
-    \\A small Vim-like editor. Opens `file` (created on the first :w if it
-    \\doesn't exist), or an empty buffer.
-    \\
-    \\  +N             start at line N (+ alone: the last line)
-    \\  -c, --clean    ignore the settings file: stock zvim
-    \\  -h, --help     show this help
-    \\  -v, --version  show the version
-    \\
-    \\In the editor: i to type, Esc to stop, :w to save, :q to quit,
-    \\:q! to quit without saving. Keys work like Vim's.
-    \\
-    \\In the editor, \help explains what zvim adds to Vim's keys.
-    \\
-    \\Settings: type \set in the editor to see them, \set expandtab
-    \\shiftwidth=4 to change them. To keep them, type \settings: it opens
-    \\the settings file, ~/.config/zvim/zvimrc.
-    \\
-    \\If zvim crashes or the terminal closes with unsaved changes, they're
-    \\saved to file.zvim-recover.
-    \\
-;
+const short_usage = "usage: zvim [-c] [+line] [file], or zvim -s";
+
+fn writeUsage(w: *std.Io.Writer) !void {
+    try w.writeAll(
+        \\usage: zvim [-c] [+line] [file]
+        \\       zvim -s
+        \\
+        \\A small Vim-like editor. Opens `file` (created on the first :w if it
+        \\doesn't exist), or an empty buffer. Keys work like Vim's: i to type,
+        \\Esc to stop, :w to save, :q to quit, :q! to quit without saving.
+        \\
+        \\  +N              start at line N (+ alone: the last line)
+        \\  -c, --clean     ignore the settings file: the defaults below
+        \\  -s, --settings  edit the settings file (made, with every setting
+        \\                  at its default, if there isn't one)
+        \\  -h, --help      show this help
+        \\  -v, --version   show the version
+        \\
+        \\SETTINGS                (short name, default)
+        \\
+    );
+    try settings.writeList(w);
+    try w.writeAll(
+        \\
+        \\  They're read at startup from ~/.config/zvim/zvimrc (or
+        \\  $XDG_CONFIG_HOME/zvim/zvimrc): set lines, any number of settings
+        \\  on each.
+        \\    " a comment
+        \\    set expandtab shiftwidth=4
+        \\    set noautoindent
+        \\  Without the file zvim uses the defaults. A bad line is skipped and
+        \\  reported when zvim starts.
+        \\
+        \\WHAT ZVIM DOES BY ITSELF
+        \\  Clipboard     every yank also goes to the system clipboard, where the
+        \\                terminal allows it (also over SSH)
+        \\  Pasting       text pasted from the terminal goes in as it is, in any
+        \\                mode, without being indented or run as keys
+        \\  Recovery      after a crash or a lost connection, unsaved text is in
+        \\                file.zvim-recover next to the file (or in /tmp)
+        \\  Read-only     [RO] in the status bar; :w is refused, :w! overwrites
+        \\  Changed file  :w is refused if the file changed on disk since it was
+        \\                read; :w! overwrites, :e! reloads
+        \\  Line endings  Windows (CRLF) files stay that way: [CRLF]
+        \\
+        \\DIFFERENT FROM VIM
+        \\  Settings live only in the settings file: there's no :set, and there
+        \\  are only the ones above.
+        \\  / and ? search for plain text, not patterns.
+        \\  One file at a time; :e reloads it, it doesn't open another.
+        \\  One register: no "a, and no macros, marks, :s, windows or tabs.
+        \\  Files are read as UTF-8.
+        \\
+    );
+}
 
 /// How long to wait for the rest of a key whose first bytes arrived (an
 /// escape sequence or UTF-8 character split across reads), before deciding

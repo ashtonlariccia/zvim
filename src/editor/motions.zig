@@ -325,10 +325,10 @@ test "tabs: cursor sits on the tab, columns count to the tab stop" {
     defer e.deinit();
     try typeKeys(&e, "l");
     try expectCursor(&e, 0, 1);
-    try testing.expectEqual(@as(usize, 8), (try e.cursorPos()).col);
+    try testing.expectEqual(@as(usize, 4), (try e.cursorPos()).col);
     try typeKeys(&e, "j");
-    try expectCursor(&e, 1, 8);
-    try typeKeys(&e, "hhhk"); // column 5 is inside the tab
+    try expectCursor(&e, 1, 4);
+    try typeKeys(&e, "hhhk"); // column 1 is inside the tab
     try expectCursor(&e, 0, 0);
 }
 

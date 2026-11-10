@@ -228,7 +228,7 @@ test "multibyte characters are typed and deleted whole" {
     try expectText(&e, "中\n");
     try typeKeys(&e, "\t");
     try expectText(&e, "中\t\n");
-    try testing.expectEqual(@as(usize, 8), (try e.cursorPos()).col);
+    try testing.expectEqual(@as(usize, 4), (try e.cursorPos()).col);
 }
 
 test "in insert mode the cursor can sit after the last character" {

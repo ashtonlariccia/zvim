@@ -647,7 +647,7 @@ test "tabs, control characters, invalid bytes and wide characters" {
     var b: Buffer = try .init(testing.allocator, "a\tb\n\x1b[2J\x7f\n\xff\xfeok\n中文x\n\u{301}e\u{301}");
     defer b.deinit();
     try expectScreen(6, 12, .{ .buffer = &b, .name = "", .top = 0 }, .{
-        "a       b",
+        "a   b",
         "^[[2J^?",
         "\u{FFFD}\u{FFFD}ok",
         "中文x",
@@ -668,7 +668,7 @@ test "scrolling sideways" {
     try expectScreen(5, 6, .{ .buffer = &b, .name = "", .top = 0, .left = 3 }, .{
         "345678",
         " 字", // 文 is cut by the left edge: its visible half is blank
-        "     b", // the tab's remaining columns are blanks
+        " b", // the tab's remaining columns are blanks
         "rt",
         " Ln 1",
     });
