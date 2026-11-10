@@ -25,6 +25,29 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run zvim");
     run_step.dependOn(&run_cmd.step);
 
+    // zig build dist: small release binaries for each platform, in zig-out/dist.
+    const dist_step = b.step("dist", "Build release binaries for Linux and macOS into zig-out/dist");
+    const version = @import("build.zig.zon").version;
+    for ([_][]const u8{ "x86_64-linux", "aarch64-linux", "x86_64-macos", "aarch64-macos" }) |triple| {
+        const dist_exe = b.addExecutable(.{
+            .name = "zvim",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/main.zig"),
+                .target = b.resolveTargetQuery(std.Target.Query.parse(.{ .arch_os_abi = triple }) catch unreachable),
+                .optimize = .ReleaseSmall,
+            }),
+        });
+        const dist_options = b.addOptions();
+        dist_options.addOption(bool, "test_crash", false);
+        dist_options.addOption([]const u8, "version", version);
+        dist_exe.root_module.addOptions("build_options", dist_options);
+        const install = b.addInstallArtifact(dist_exe, .{
+            .dest_dir = .{ .override = .{ .custom = "dist" } },
+            .dest_sub_path = b.fmt("zvim-{s}-{s}", .{ version, triple }),
+        });
+        dist_step.dependOn(&install.step);
+    }
+
     const tests = b.addTest(.{ .root_module = exe.root_module });
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);

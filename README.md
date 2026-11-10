@@ -9,6 +9,12 @@ runtime files, no plugins or Vimscript: just the editing.
 
 Requires Zig 0.17.
 
+To install, copy one binary somewhere on your PATH; there's nothing else.
+`zig build dist` builds small static binaries for Linux (x86_64, aarch64)
+and macOS (x86_64, aarch64) into `zig-out/dist/`, e.g.
+
+    cp zig-out/dist/zvim-0.0.1-x86_64-linux ~/.bin/zvim
+
 ## Layout
 
 The editor core does no I/O: keys go in, text and cursor come out. That keeps
