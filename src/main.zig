@@ -4,6 +4,11 @@ const ui = @import("ui.zig");
 const file = @import("file.zig");
 const Editor = @import("Editor.zig");
 const Decoder = @import("keys.zig").Decoder;
+const crash = @import("crash.zig");
+const build_options = @import("build_options");
+
+/// On a crash, save unsaved changes and restore the terminal first.
+pub const panic = std.debug.FullPanic(crash.panic);
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -17,9 +22,40 @@ pub fn main(init: std.process.Init) !void {
         try @import("Buffer.zig").init(init.gpa, "");
     var editor: Editor = try .init(init.gpa, buffer, path);
     defer editor.deinit();
+    noteRecoveryFile(&editor, init.io, path);
 
+    // `run` restores the terminal when it returns; anything but a normal
+    // quit then saves unsaved changes to a recovery file.
+    const end = run(init, &editor) catch |err| {
+        var buf: crash.PathBuffer = undefined;
+        if (crash.saveRecovery(&editor, &buf)) |saved| {
+            std.debug.print("zvim: {s}. Unsaved changes were saved to {s}\n", .{ @errorName(err), saved });
+        }
+        return err;
+    };
+    if (end == .hangup) {
+        var buf: crash.PathBuffer = undefined;
+        if (crash.saveRecovery(&editor, &buf)) |saved| {
+            std.debug.print("zvim: the session ended. Unsaved changes were saved to {s}\n", .{saved});
+        }
+        std.process.exit(1);
+    }
+}
+
+/// Tells the user, in the status line, if a crash left a recovery file for
+/// this file.
+fn noteRecoveryFile(editor: *Editor, io: std.Io, path: []const u8) void {
+    var buf: crash.PathBuffer = undefined;
+    const recovery = crash.recoveryPath(&buf, path) orelse return;
+    std.Io.Dir.cwd().access(io, recovery, .{}) catch return;
+    editor.setMessage(true, "{s} exists: unsaved changes from a crash", .{recovery});
+}
+
+fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
     var term = try Terminal.init();
     defer term.deinit();
+    crash.install(editor, &term);
+    defer crash.uninstall();
 
     var out_buf: [16 * 1024]u8 = undefined;
     var out_file: std.Io.File.Writer = .initStreaming(.stdout(), init.io, &out_buf);
@@ -53,7 +89,7 @@ pub fn main(init: std.process.Init) !void {
             .left = editor.left,
             .cursor = .{ .line = pos.line, .col = pos.col },
             .cursor_shape = if (editor.mode == .insert) .bar else .block,
-            .mode = modeLabel(&editor),
+            .mode = modeLabel(editor),
             .modified = editor.isModified(),
             .command = if (editor.mode == .command) editor.command.items else null,
             .command_prefix = switch (editor.command_kind) {
@@ -71,21 +107,27 @@ pub fn main(init: std.process.Init) !void {
 
         switch (try term.next(&in_buf)) {
             .resize => size = Terminal.size(),
+            .hangup => return .hangup,
             .input => |bytes| {
                 var keys: Decoder = .{ .bytes = bytes, .in_paste = in_paste };
                 defer in_paste = keys.in_paste;
-                while (keys.next()) |key| switch (try editor.handleKey(key)) {
-                    .none => {},
-                    .quit => return,
-                    .write => |write| {
-                        file.save(&editor.buffer, init.io, .cwd(), write.path) catch |err| {
-                            editor.writeFailed(write.path, err);
-                            continue;
-                        };
-                        editor.wrote(write.path);
-                        if (write.then_quit) return;
-                    },
-                };
+                while (keys.next()) |key| {
+                    if (build_options.test_crash and key == .ctrl and key.ctrl == 0x7c) {
+                        @panic("test crash (Ctrl-\\ in a -Dtest-crash build)");
+                    }
+                    switch (try editor.handleKey(key)) {
+                        .none => {},
+                        .quit => return .quit,
+                        .write => |write| {
+                            file.save(&editor.buffer, init.io, .cwd(), write.path) catch |err| {
+                                editor.writeFailed(write.path, err);
+                                continue;
+                            };
+                            editor.wrote(write.path);
+                            if (write.then_quit) return .quit;
+                        },
+                    }
+                }
             },
         }
     }
@@ -129,5 +171,6 @@ test {
     _ = @import("keys.zig");
     _ = @import("Editor.zig");
     _ = @import("History.zig");
+    _ = @import("crash.zig");
     _ = @import("editor/words.zig");
 }

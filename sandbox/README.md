@@ -31,6 +31,13 @@ Yanks also go to your system clipboard (OSC 52, works over SSH in terminals
 that support it, like wezterm). Pasting from your terminal inserts the text
 as-is in any mode. Indenting uses tabs.
 
+If zvim crashes, or your terminal or SSH connection closes while there are
+unsaved changes, they're saved next to the file as `name.zvim-recover` (or in
+`/tmp` if that directory isn't writable). Opening the file again shows a
+reminder while that file exists; delete it once you've recovered what you need.
+To try it, build with `zig build -Dtest-crash=true`, where Ctrl-\ crashes on
+purpose.
+
 The status bar shows the file name, `[+]` for unsaved changes, the mode, the
 terminal size, and the cursor position: `Ln` (line / total lines) and `Col`
 (screen column).

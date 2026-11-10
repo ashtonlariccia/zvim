@@ -1,5 +1,7 @@
 //! Raw terminal I/O: raw mode, alternate screen, window size, and an event
-//! wait that wakes on either keyboard input or a window resize (SIGWINCH).
+//! wait that wakes on keyboard input, a window resize (SIGWINCH), or the
+//! session ending (SIGHUP when the terminal or SSH connection goes away,
+//! SIGTERM when asked to quit).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -11,6 +13,8 @@ pub const Size = struct { rows: u16, cols: u16 };
 pub const Event = union(enum) {
     input: []const u8,
     resize,
+    /// The terminal is gone or zvim was told to quit.
+    hangup,
 };
 
 const stdin = posix.STDIN_FILENO;
@@ -19,11 +23,15 @@ const stdout = posix.STDOUT_FILENO;
 const enter_seq = "\x1b[?1049h\x1b[?25l\x1b[?2004h"; // alternate screen, hide cursor, bracketed paste
 const leave_seq = "\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1049l"; // no bracketed paste, default cursor shape, show cursor, main screen
 
-/// Self-pipe: the SIGWINCH handler writes a byte here so poll() wakes up.
-var resize_pipe: [2]posix.fd_t = .{ -1, -1 };
+/// Self-pipe: signal handlers write a byte here so poll() wakes up. 'w' for
+/// a resize, 'q' for a hangup or termination.
+var signal_pipe: [2]posix.fd_t = .{ -1, -1 };
 
-fn onWinch(_: posix.SIG) callconv(.c) void {
-    _ = sys.write(resize_pipe[1], "!", 1);
+const handled_signals = [_]posix.SIG{ .WINCH, .HUP, .TERM };
+
+fn onSignal(sig: posix.SIG) callconv(.c) void {
+    const byte: []const u8 = if (sig == .WINCH) "w" else "q";
+    _ = sys.write(signal_pipe[1], byte.ptr, 1);
 }
 
 pub const Terminal = struct {
@@ -49,13 +57,13 @@ pub const Terminal = struct {
         try posix.tcsetattr(stdin, .FLUSH, raw);
         errdefer posix.tcsetattr(stdin, .FLUSH, original) catch {};
 
-        try openResizePipe();
+        try openSignalPipe();
         var act: posix.Sigaction = .{
-            .handler = .{ .handler = onWinch },
+            .handler = .{ .handler = onSignal },
             .mask = posix.sigemptyset(),
             .flags = 0,
         };
-        posix.sigaction(.WINCH, &act, null);
+        for (handled_signals) |sig| posix.sigaction(sig, &act, null);
 
         writeAll(enter_seq);
         return .{ .original = original };
@@ -67,8 +75,8 @@ pub const Terminal = struct {
             .mask = posix.sigemptyset(),
             .flags = 0,
         };
-        posix.sigaction(.WINCH, &act, null);
-        for (&resize_pipe) |*fd| {
+        for (handled_signals) |sig| posix.sigaction(sig, &act, null);
+        for (&signal_pipe) |*fd| {
             _ = sys.close(fd.*);
             fd.* = -1;
         }
@@ -87,32 +95,40 @@ pub const Terminal = struct {
         return .{ .rows = ws.row, .cols = ws.col };
     }
 
-    /// Blocks until there is keyboard input or the window was resized.
-    /// Input bytes are read into `buf`; resizes take priority.
+    /// Blocks until there is keyboard input, the window was resized, or the
+    /// session is ending. Input bytes are read into `buf`; signals take
+    /// priority.
     pub fn next(_: *Terminal, buf: []u8) !Event {
         var fds = [_]posix.pollfd{
-            .{ .fd = resize_pipe[0], .events = posix.POLL.IN, .revents = 0 },
+            .{ .fd = signal_pipe[0], .events = posix.POLL.IN, .revents = 0 },
             .{ .fd = stdin, .events = posix.POLL.IN, .revents = 0 },
         };
         _ = try posix.poll(&fds, -1);
 
         if (fds[0].revents & posix.POLL.IN != 0) {
-            // Drain so several queued resizes collapse into one redraw.
+            // Drain, so several queued resizes collapse into one redraw.
+            var hangup = false;
             var drain: [64]u8 = undefined;
-            while (true) _ = posix.read(resize_pipe[0], &drain) catch break;
-            return .resize;
+            while (true) {
+                const n = posix.read(signal_pipe[0], &drain) catch break;
+                if (n == 0) break;
+                if (std.mem.indexOfScalar(u8, drain[0..n], 'q') != null) hangup = true;
+            }
+            return if (hangup) .hangup else .resize;
         }
-        const n = try posix.read(stdin, buf);
+        // End of input: the terminal went away without a signal reaching us.
+        const n = posix.read(stdin, buf) catch return .hangup;
+        if (n == 0) return .hangup;
         return .{ .input = buf[0..n] };
     }
 };
 
-fn openResizePipe() !void {
-    switch (posix.errno(sys.pipe(&resize_pipe))) {
+fn openSignalPipe() !void {
+    switch (posix.errno(sys.pipe(&signal_pipe))) {
         .SUCCESS => {},
         else => |err| return posix.unexpectedErrno(err),
     }
-    for (resize_pipe) |fd| {
+    for (signal_pipe) |fd| {
         const flags = sys.fcntl(fd, posix.F.GETFL, @as(usize, 0));
         const nonblock: usize = @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
         _ = sys.fcntl(fd, posix.F.SETFL, @as(usize, @intCast(flags)) | nonblock);

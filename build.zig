@@ -12,6 +12,10 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    // A crash trigger (Ctrl-\) for testing crash recovery by hand.
+    const options = b.addOptions();
+    options.addOption(bool, "test_crash", b.option(bool, "test-crash", "Make Ctrl-\\ crash zvim, to test crash recovery") orelse false);
+    exe.root_module.addOptions("build_options", options);
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
