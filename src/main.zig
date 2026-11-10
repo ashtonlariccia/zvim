@@ -27,4 +27,5 @@ test {
     _ = @import("ui.zig");
     _ = @import("term.zig");
     _ = @import("Buffer.zig");
+    _ = @import("text.zig");
 }
