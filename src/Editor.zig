@@ -330,6 +330,16 @@ pub fn handleKey(self: *Editor, key: Key) Allocator.Error!Action {
         return .none;
     }
 
+    // Ctrl-C: like Escape in insert mode, on the command line and in visual
+    // mode; in normal mode, a reminder of how to quit.
+    if (key == .ctrl and key.ctrl == 'c') {
+        if (self.mode == .normal and self.pending.isEmpty()) {
+            self.setMessage(false, "Type :q! and press Enter to quit without saving", .{});
+            return .none;
+        }
+        return self.handleKey(.escape);
+    }
+
     const action: Action = switch (self.mode) {
         .normal, .visual => blk: {
             try normal.normalKey(self, key);

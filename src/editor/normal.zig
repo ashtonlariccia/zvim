@@ -380,3 +380,19 @@ test "Ctrl-Z asks the caller to suspend, and isn't what . repeats" {
     try typeKeys(&e, ".");
     try expectText(&e, "c\n");
 }
+
+test "Ctrl-C leaves insert and visual mode, cancels commands, and says how to quit" {
+    var e = try testEditor("abc\n");
+    defer e.deinit();
+    try typeKeys(&e, "ix\x03");
+    try testing.expectEqual(Editor.Mode.normal, e.mode);
+    try expectText(&e, "xabc\n");
+    try typeKeys(&e, "v\x03");
+    try testing.expectEqual(Editor.Mode.normal, e.mode);
+    try typeKeys(&e, ":q\x03");
+    try testing.expectEqual(Editor.Mode.normal, e.mode);
+    try typeKeys(&e, "d\x03x"); // the d is cancelled; x still works
+    try expectText(&e, "abc\n");
+    try typeKeys(&e, "\x03");
+    try testing.expectEqualStrings("Type :q! and press Enter to quit without saving", e.message.text());
+}
