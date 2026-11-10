@@ -179,7 +179,7 @@ test "o and O open lines below and above" {
     defer e.deinit();
     try typeThenEscape(&e, "oone and a half");
     try expectText(&e, "one\none and a half\ntwo\n");
-    try typeThenEscape(&e, "Gkk"); // (G does nothing yet) move to line 0
+    try typeThenEscape(&e, "Gkk"); // to line 0
     try typeThenEscape(&e, "Ozero");
     try expectText(&e, "zero\none\none and a half\ntwo\n");
     try expectCursor(&e, 0, 3);

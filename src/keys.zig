@@ -112,9 +112,6 @@ pub const Decoder = struct {
         return null;
     }
 
-    /// ESC [ always starts a sequence. ESC O only does when a key code
-    /// follows; otherwise it is Escape then a typed 'O' (e.g. leaving insert
-    /// mode and opening a line above in quick succession).
     /// Whether `s` is the beginning of a key whose remaining bytes may still
     /// be on their way: a lone ESC, ESC [ without its final byte, ESC O
     /// without its key, or a UTF-8 character missing continuation bytes.
@@ -142,6 +139,9 @@ pub const Decoder = struct {
         return 0;
     }
 
+    /// ESC [ always starts a sequence. ESC O only does when a key code
+    /// follows; otherwise it is Escape then a typed 'O' (e.g. leaving insert
+    /// mode and opening a line above in quick succession).
     fn isSequenceStart(s: []const u8) bool {
         if (s.len < 2) return false;
         if (s[1] == '[') return true;

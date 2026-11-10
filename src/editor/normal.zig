@@ -24,9 +24,8 @@ pub fn keyChar(key: Key) ?u21 {
     };
 }
 
-/// Whether `key`, where a command can start, is one that changes the text
-/// : what the help page refuses. Yanking, selecting
-/// and `:` are left.
+/// Whether `key`, where a command can start, is one that changes the text:
+/// what the help page refuses. Moving, yanking, selecting and `:` are left.
 fn changesText(ed: *const Editor, key: Key) bool {
     const in_visual = ed.mode == .visual;
     return switch (key) {
@@ -269,7 +268,7 @@ pub fn waitFor(ed: *Editor, wait: Editor.Pending.Wait) void {
 }
 
 /// An operator key: in visual mode it acts on the selection; doubled (dd,
-/// yy, cc, >>, <<) it acts on [count] lines; otherwise it waits for a words.
+/// yy, cc, >>, <<) it acts on [count] lines; otherwise it waits for a motion.
 pub fn operatorKey(ed: *Editor, op: Editor.Op) !void {
     if (ed.mode == .visual) {
         ed.pending = .{};
@@ -285,7 +284,7 @@ pub fn operatorKey(ed: *Editor, op: Editor.Op) !void {
     ed.pending.op = op;
 }
 
-/// x, X, s, D, C: an operator with a fixed words. In visual mode they act on
+/// x, X, s, D, C: an operator with a fixed motion. In visual mode they act on
 /// the selection (D, C and X on whole lines).
 pub fn shortcut(ed: *Editor, op: Editor.Op, m: motions.Motion, count: usize) !void {
     if (ed.mode == .visual) {

@@ -2,7 +2,7 @@
 //! the buffer, cursor and view change.
 //!
 //! Normal and visual mode follow Vim's grammar: [count] [operator [count]]
-//! words. An operator (d, y, c, >, <) acts on the text a motion moves over,
+//! motion. An operator (d, y, c, >, <) acts on the text a motion moves over,
 //! or in visual mode on the selection.
 //!
 //! Lines are what the user sees: a newline at the very end of the text ends
@@ -410,7 +410,6 @@ pub fn handleKey(self: *Editor, key: Key) Allocator.Error!Action {
     return action;
 }
 
-// ---------------------------------------------------------------------------
 // Editing primitives and cursor helpers, shared by the modules in editor/.
 // Every change to the buffer goes through insertBytes and deleteBytes so it
 // can be undone and so `.` can tell whether a command changed anything.
@@ -566,8 +565,7 @@ pub fn insertAtCursor(self: *Editor, bytes: []const u8) !void {
     try self.updateWantCol();
 }
 
-// ---------------------------------------------------------------------------
-// Cursor and view
+// Cursor and view.
 
 /// Keeps the cursor within its line after an edit or mode change.
 pub fn clampCursor(self: *Editor) !void {
