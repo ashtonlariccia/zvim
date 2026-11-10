@@ -15,6 +15,7 @@ pub fn build(b: *std.Build) void {
     // A crash trigger (Ctrl-\) for testing crash recovery by hand.
     const options = b.addOptions();
     options.addOption(bool, "test_crash", b.option(bool, "test-crash", "Make Ctrl-\\ crash zvim, to test crash recovery") orelse false);
+    options.addOption([]const u8, "version", @import("build.zig.zon").version);
     exe.root_module.addOptions("build_options", options);
     b.installArtifact(exe);
 

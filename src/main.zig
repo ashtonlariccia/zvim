@@ -16,6 +16,15 @@ pub fn main(init: std.process.Init) !void {
     // +N opens at line N, + at the last line.
     var start_line: ?usize = null;
     for (args[1..]) |arg| {
+        const help_flag = std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
+        const version_flag = std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v");
+        if (help_flag or version_flag) {
+            var buf: [1024]u8 = undefined;
+            var stdout: std.Io.File.Writer = .initStreaming(.stdout(), init.io, &buf);
+            if (help_flag) try stdout.interface.writeAll(help) else try stdout.interface.print("zvim {s}\n", .{build_options.version});
+            try stdout.interface.flush();
+            return;
+        }
         if (arg.len > 0 and arg[0] == '+') {
             start_line = if (arg.len == 1) std.math.maxInt(usize) else std.fmt.parseInt(usize, arg[1..], 10) catch
                 fatal("not a line number: {s}", .{arg});
@@ -172,6 +181,24 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
         }
     }
 }
+
+const help =
+    \\usage: zvim [+line] [file]
+    \\
+    \\A small Vim-like editor. Opens `file` (created on the first :w if it
+    \\doesn't exist), or an empty buffer.
+    \\
+    \\  +N             start at line N (+ alone: the last line)
+    \\  -h, --help     show this help
+    \\  -v, --version  show the version
+    \\
+    \\In the editor: i to type, Esc to stop, :w to save, :q to quit,
+    \\:q! to quit without saving. Keys work like Vim's.
+    \\
+    \\If zvim crashes or the terminal closes with unsaved changes, they're
+    \\saved to file.zvim-recover.
+    \\
+;
 
 /// How long to wait for the rest of a key whose first bytes arrived (an
 /// escape sequence or UTF-8 character split across reads), before deciding
