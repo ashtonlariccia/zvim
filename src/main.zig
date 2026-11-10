@@ -33,13 +33,14 @@ pub fn main(init: std.process.Init) !void {
         } else fatal("usage: zvim [+line] [file]", .{});
     }
 
-    const buffer = if (path.len > 0)
+    const loaded: file.Loaded = if (path.len > 0)
         file.load(init.gpa, init.io, .cwd(), path) catch |err|
             fatal("cannot open {s}: {s}", .{ path, @errorName(err) })
     else
-        try @import("Buffer.zig").init(init.gpa, "");
-    var editor: Editor = try .init(init.gpa, buffer, path);
+        .{ .buffer = try @import("Buffer.zig").init(init.gpa, ""), .crlf = false };
+    var editor: Editor = try .init(init.gpa, loaded.buffer, path);
     defer editor.deinit();
+    editor.crlf = loaded.crlf;
     if (start_line) |n| try editor.goToLine(n);
     noteRecoveryFile(&editor, init.io, path);
 
@@ -113,6 +114,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
             .cursor_shape = if (editor.mode == .insert) .bar else .block,
             .mode = modeLabel(editor),
             .modified = editor.isModified(),
+            .crlf = editor.crlf,
             .command = if (editor.mode == .command) editor.command.items else null,
             .command_prefix = switch (editor.command_kind) {
                 .ex => ':',
@@ -151,14 +153,15 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
                             editor.setMessage(true, "E484: Can't read {s}: {s}", .{ reload_path, @errorName(err) });
                             continue;
                         };
-                        try editor.reloaded(fresh);
+                        try editor.reloaded(fresh.buffer);
+                        editor.crlf = fresh.crlf;
                     },
                     .@"suspend" => {
                         term.suspendProcess();
                         size = Terminal.size();
                     },
                     .write => |write| {
-                        file.save(&editor.buffer, init.io, .cwd(), write.path) catch |err| {
+                        file.save(&editor.buffer, init.io, .cwd(), write.path, editor.crlf) catch |err| {
                             editor.writeFailed(write.path, err);
                             continue;
                         };

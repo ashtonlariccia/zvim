@@ -72,6 +72,9 @@ last_search_forward: bool = true,
 visual_anchor: usize = 0,
 visual_kind: VisualKind = .char,
 dot: Dot = .{},
+/// The file uses Windows line endings (\r\n); the buffer holds plain lines
+/// and saving puts the \r back.
+crlf: bool = false,
 /// Where the cursor was left after inserting a new line's indentation
 /// automatically. While it's still there (nothing typed), leaving insert
 /// mode or pressing Enter again removes that indentation.
@@ -200,7 +203,9 @@ pub fn setMessage(self: *Editor, is_error: bool, comptime fmt: []const u8, args:
 /// Called after a successful `write` action.
 pub fn wrote(self: *Editor, path: []const u8) void {
     self.history.markSaved();
-    self.setMessage(false, "\"{s}\" {d}L, {d}B written", .{ path, self.buffer.visibleLineCount(), self.buffer.len });
+    const lines = self.buffer.visibleLineCount();
+    const bytes = self.buffer.len + if (self.crlf) self.buffer.newlines else 0;
+    self.setMessage(false, "\"{s}\" {s}{d}L, {d}B written", .{ path, if (self.crlf) "[dos] " else "", lines, bytes });
 }
 
 /// Called after a `reload` action with the freshly loaded buffer: replaces
