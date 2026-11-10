@@ -45,6 +45,49 @@ pub const View = struct {
     command: ?[]const u8 = null,
     /// When set (and not in command mode), shown instead of the status bar.
     message: ?Message = null,
+    /// Shown before the command text: ':' or a search's '/' or '?'.
+    command_prefix: u8 = ':',
+    /// The visual selection, drawn in reverse video.
+    selection: ?Selection = null,
+};
+
+pub const Selection = struct {
+    kind: enum { char, line, block },
+    first_line: usize,
+    last_line: usize,
+    /// Char: display column where the selection starts on the first line and
+    /// ends (exclusive) on the last. Block: the column range on every line.
+    start_col: usize = 0,
+    end_col: usize = 0,
+
+    fn highlight(s: Selection, line: usize) Highlight {
+        if (line < s.first_line or line > s.last_line) return .{};
+        const all = std.math.maxInt(usize);
+        return switch (s.kind) {
+            .line => .{ .from = 0, .to = all, .line_end = true },
+            .block => .{ .from = s.start_col, .to = s.end_col },
+            .char => .{
+                .from = if (line == s.first_line) s.start_col else 0,
+                .to = if (line == s.last_line) s.end_col else all,
+                .line_end = line != s.last_line,
+                .end_if_covered = true,
+            },
+        };
+    }
+};
+
+/// Display columns of a line drawn in reverse video.
+const Highlight = struct {
+    from: usize = 0,
+    to: usize = 0,
+    /// Show a selected line break as one reversed cell after the text.
+    line_end: bool = false,
+    /// Show that cell also when the range covers the end of the line.
+    end_if_covered: bool = false,
+
+    fn covers(h: Highlight, col: usize) bool {
+        return col >= h.from and col < h.to;
+    }
 };
 
 pub const Message = struct { text: []const u8, is_error: bool };
@@ -78,7 +121,8 @@ pub fn draw(w: *std.Io.Writer, size: Size, view: View) !void {
         var used: usize = 0;
         if (line < lines) {
             var chars = lineChars(view.buffer, line);
-            used = try drawChars(w, &chars, view.left, cols);
+            const hl: Highlight = if (view.selection) |sel| sel.highlight(line) else .{};
+            used = try drawCharsHighlighted(w, &chars, view.left, cols, hl);
         } else if (cols > 0) {
             try w.writeAll("~");
             used = 1;
@@ -94,7 +138,7 @@ pub fn draw(w: *std.Io.Writer, size: Size, view: View) !void {
             const width = 1 + try drawChars(null, &chars, 0, std.math.maxInt(usize));
             const hidden = (width + 1) -| cols; // columns scrolled off the left
             const colon: usize = if (hidden == 0) 1 else 0;
-            if (colon == 1) try w.writeAll(":");
+            if (colon == 1) try w.writeAll(&.{view.command_prefix});
             chars = .{ .bytes = command };
             const used = colon + try drawChars(w, &chars, hidden -| 1, cols - colon);
             if (used < cols) try w.writeAll("\x1b[K");
@@ -237,6 +281,11 @@ fn lineChars(buffer: *const Buffer, line: usize) BufferChars {
 /// and returns the screen columns used. A character cut by either edge is
 /// shown as blanks. With a null writer it only measures.
 fn drawChars(w: ?*std.Io.Writer, chars: anytype, left: usize, max_cols: usize) !usize {
+    return drawCharsHighlighted(w, chars, left, max_cols, .{});
+}
+
+/// `drawChars` with the columns in `hl` in reverse video.
+fn drawCharsHighlighted(w: ?*std.Io.Writer, chars: anytype, left: usize, max_cols: usize, hl: Highlight) !usize {
     const right = left + max_cols;
     var col: usize = 0; // display column in the line
     var used: usize = 0; // screen columns written
@@ -244,8 +293,10 @@ fn drawChars(w: ?*std.Io.Writer, chars: anytype, left: usize, max_cols: usize) !
     // the cursor is re-synced before the next character that takes space.
     var resync = false;
     var drew_prev = false;
-    while (chars.next()) |g| {
-        if (col >= right) break;
+    var reversed = false;
+    defer if (reversed) if (w) |out| out.writeAll(reset) catch {};
+    const ended = while (chars.next()) |g| {
+        if (col >= right) break false;
         const cw = text.cellWidth(g.cp, col);
         if (cw == 0) {
             // Combining mark: attaches to the previous character if it's shown.
@@ -264,10 +315,11 @@ fn drawChars(w: ?*std.Io.Writer, chars: anytype, left: usize, max_cols: usize) !
         if (start < left or end > right) {
             // Cut by an edge. A tab is just spaces anyway; a wide or ^X
             // character at the right edge isn't shown at all.
-            if (end > right and g.cp != '\t') break;
+            if (end > right and g.cp != '\t') break false;
             const vis_start = @max(start, left);
             const vis_end = @min(end, right);
             if (w) |out| {
+                try setReverse(out, &reversed, hl.covers(start));
                 if (resync) try out.print("\x1b[{d}G", .{vis_start - left + 1});
                 try out.splatByteAll(' ', vis_end - vis_start);
             }
@@ -277,6 +329,7 @@ fn drawChars(w: ?*std.Io.Writer, chars: anytype, left: usize, max_cols: usize) !
         }
 
         if (w) |out| {
+            try setReverse(out, &reversed, hl.covers(start));
             if (resync) try out.print("\x1b[{d}G", .{start - left + 1});
             if (g.cp == '\t') {
                 try out.splatByteAll(' ', cw);
@@ -292,8 +345,24 @@ fn drawChars(w: ?*std.Io.Writer, chars: anytype, left: usize, max_cols: usize) !
         used = end - left;
         resync = g.cp >= 0x80;
         drew_prev = true;
+    } else true;
+
+    // A selected line break shows as one reversed cell after the text.
+    if (ended and (hl.line_end or (hl.end_if_covered and hl.covers(col))) and col >= left and col < right) {
+        if (w) |out| {
+            try setReverse(out, &reversed, true);
+            if (resync) try out.print("\x1b[{d}G", .{col - left + 1});
+            try out.writeAll(" ");
+        }
+        used = col - left + 1;
     }
     return used;
+}
+
+fn setReverse(out: *std.Io.Writer, on: *bool, want: bool) !void {
+    if (on.* == want) return;
+    try out.writeAll(if (want) reverse else reset);
+    on.* = want;
 }
 
 /// A terminal model for tests: replays cursor movement and text from `out`
@@ -309,7 +378,19 @@ fn renderToGrid(
     comptime cols: usize,
     termWidth: *const fn (u21) u2,
 ) ![rows][cols]u21 {
+    return (try renderToGridAttrs(out, rows, cols, termWidth)).chars;
+}
+
+/// `renderToGrid`, also recording which cells were written in reverse video.
+fn renderToGridAttrs(
+    out: []const u8,
+    comptime rows: usize,
+    comptime cols: usize,
+    termWidth: *const fn (u21) u2,
+) !struct { chars: [rows][cols]u21, reversed: [rows][cols]bool } {
     var grid: [rows][cols]u21 = @splat(@splat(' '));
+    var rev: [rows][cols]bool = @splat(@splat(false));
+    var reversed = false;
     var r: usize = 0;
     var c: usize = 0;
     var wrap_pending = false;
@@ -332,9 +413,13 @@ fn renderToGrid(
                     wrap_pending = false;
                 },
                 'K' => {
-                    for (grid[r][c..]) |*cell| cell.* = ' ';
+                    for (grid[r][c..], rev[r][c..]) |*cell, *rv| {
+                        cell.* = ' ';
+                        rv.* = false;
+                    }
                     wrap_pending = false;
                 },
+                'm' => reversed = std.mem.eql(u8, params, "7"),
                 else => {},
             }
             i = j + 1;
@@ -352,14 +437,31 @@ fn renderToGrid(
             if (r == rows) return error.ScrolledOffScreen;
         }
         grid[r][c] = cp;
-        if (cw == 2) grid[r][c + 1] = 0;
+        rev[r][c] = reversed;
+        if (cw == 2) {
+            grid[r][c + 1] = 0;
+            rev[r][c + 1] = reversed;
+        }
         c += cw;
         if (c == cols) {
             c = cols - 1;
             wrap_pending = true;
         }
     }
-    return grid;
+    return .{ .chars = grid, .reversed = rev };
+}
+
+/// Which cells of the text rows are in reverse video, as '#' and '.'.
+fn highlightMap(comptime rows: usize, comptime cols: usize, view: View) ![rows - 1][cols]u8 {
+    var out: [64 * 1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&out);
+    try draw(&w, .{ .rows = rows, .cols = cols }, view);
+    const g = try renderToGridAttrs(w.buffered(), rows, cols, &text.width);
+    var map: [rows - 1][cols]u8 = undefined;
+    for (0..rows - 1) |r| {
+        for (0..cols) |c| map[r][c] = if (g.reversed[r][c]) '#' else '.';
+    }
+    return map;
 }
 
 /// Renders a frame and returns each screen row as a UTF-8 string, with
@@ -467,6 +569,44 @@ test "a long command line scrolls to keep the cursor in view" {
     var w: std.Io.Writer = .fixed(&buf);
     try draw(&w, .{ .rows = 2, .cols = 8 }, .{ .buffer = &b, .name = "", .top = 0, .command = "w a_long_name" });
     try testing.expect(std.mem.endsWith(u8, w.buffered(), "\x1b[2;8H\x1b[6 q" ++ show_cursor ++ sync_end));
+}
+
+fn expectHighlight(comptime rows: usize, comptime cols: usize, view: View, expected: [rows - 1]*const [cols]u8) !void {
+    const map = try highlightMap(rows, cols, view);
+    for (expected, map) |e, m| try testing.expectEqualStrings(e, &m);
+}
+
+test "character selection: partial first and last lines, line breaks in between" {
+    var b: Buffer = try .init(testing.allocator, "abcd\n\nefgh\n");
+    defer b.deinit();
+    const sel: Selection = .{ .kind = .char, .first_line = 0, .last_line = 2, .start_col = 2, .end_col = 2 };
+    try expectHighlight(4, 6, .{ .buffer = &b, .name = "", .top = 0, .selection = sel }, .{
+        "..###.", // "cd" and the line break
+        "#.....", // an empty line inside the selection
+        "##....", // "ef"
+    });
+}
+
+test "line and block selections" {
+    var b: Buffer = try .init(testing.allocator, "abcd\nab\nabcdef\n");
+    defer b.deinit();
+    try expectHighlight(4, 8, .{ .buffer = &b, .name = "", .top = 0, .selection = .{ .kind = .line, .first_line = 1, .last_line = 2 } }, .{
+        "........",
+        "###.....",
+        "#######.",
+    });
+    try expectHighlight(4, 8, .{ .buffer = &b, .name = "", .top = 0, .selection = .{ .kind = .block, .first_line = 0, .last_line = 2, .start_col = 1, .end_col = 3 } }, .{
+        ".##.....",
+        ".#......", // short line: only what's there
+        ".##.....",
+    });
+}
+
+test "a selection ending on an empty last line shows its cell" {
+    var b: Buffer = try .init(testing.allocator, "ab\n\n");
+    defer b.deinit();
+    const sel: Selection = .{ .kind = .char, .first_line = 0, .last_line = 1, .start_col = 1, .end_col = 1 };
+    try expectHighlight(3, 4, .{ .buffer = &b, .name = "", .top = 0, .selection = sel }, .{ ".##.", "#..." });
 }
 
 test "a line that exactly fills the row keeps its last character" {

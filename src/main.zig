@@ -30,6 +30,17 @@ pub fn main(init: std.process.Init) !void {
     while (true) {
         try editor.scrollToCursor(ui.textRows(size), size.cols);
         const pos = try editor.cursorPos();
+        const selection: ?ui.Selection = if (try editor.selection()) |sel| .{
+            .kind = switch (sel.kind) {
+                .char => .char,
+                .line => .line,
+                .block => .block,
+            },
+            .first_line = sel.first_line,
+            .last_line = sel.last_line,
+            .start_col = sel.start_col,
+            .end_col = sel.end_col,
+        } else null;
         try ui.draw(out, size, .{
             .buffer = &editor.buffer,
             .name = editor.name.items,
@@ -37,9 +48,15 @@ pub fn main(init: std.process.Init) !void {
             .left = editor.left,
             .cursor = .{ .line = pos.line, .col = pos.col },
             .cursor_shape = if (editor.mode == .insert) .bar else .block,
-            .mode = if (editor.mode == .insert) "-- INSERT --" else "",
+            .mode = modeLabel(&editor),
             .modified = editor.isModified(),
             .command = if (editor.mode == .command) editor.command.items else null,
+            .command_prefix = switch (editor.command_kind) {
+                .ex => ':',
+                .search_forward => '/',
+                .search_backward => '?',
+            },
+            .selection = selection,
             .message = if (editor.message.len > 0)
                 .{ .text = editor.message.text(), .is_error = editor.message.is_error }
             else
@@ -68,6 +85,19 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
+fn modeLabel(editor: *const Editor) []const u8 {
+    const mode = if (editor.mode == .command) editor.command_return else editor.mode;
+    return switch (mode) {
+        .insert => "-- INSERT --",
+        .visual => switch (editor.visual_kind) {
+            .char => "-- VISUAL --",
+            .line => "-- VISUAL LINE --",
+            .block => "-- VISUAL BLOCK --",
+        },
+        else => "",
+    };
+}
+
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     std.debug.print("zvim: " ++ fmt ++ "\n", args);
     std.process.exit(1);
@@ -82,4 +112,5 @@ test {
     _ = @import("keys.zig");
     _ = @import("Editor.zig");
     _ = @import("History.zig");
+    _ = @import("motion.zig");
 }
