@@ -168,6 +168,11 @@ pub fn normalKey(ed: *Editor, key: Key) !void {
                 ed.dot.excluded = true;
                 cmdline.openCommandLine(ed, .ex);
             },
+            // zvim's own commands; a key Vim leaves unused.
+            '\\' => if (!in_visual) {
+                ed.dot.excluded = true;
+                cmdline.openCommandLine(ed, .zvim);
+            },
             else => {},
         },
         else => {},

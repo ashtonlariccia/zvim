@@ -113,7 +113,8 @@ pub const blanks: [@import("editor/settings.zig").max_width]u8 = @splat(' ');
 
 pub const VisualKind = enum { char, line, block };
 
-pub const CommandKind = enum { ex, search_forward, search_backward };
+/// `zvim` is the \ command line, for zvim's own commands (see settings.zig).
+pub const CommandKind = enum { ex, zvim, search_forward, search_backward };
 
 pub const Message = struct {
     buf: [256]u8 = undefined,

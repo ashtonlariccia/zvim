@@ -1,4 +1,5 @@
-//! The command line: `:` commands and `/` `?` searches.
+//! The command line: `:` commands, `\` commands (zvim's own, see
+//! settings.zig) and `/` `?` searches.
 
 const std = @import("std");
 const Editor = @import("../Editor.zig");
@@ -36,6 +37,7 @@ pub fn commandKey(ed: *Editor, key: Key) !Editor.Action {
             ed.mode = ed.command_return;
             switch (ed.command_kind) {
                 .ex => return runCommand(ed),
+                .zvim => _ = settings.runLine(ed, ed.command.items),
                 .search_forward, .search_backward => try runSearch(ed),
             }
         },
@@ -50,7 +52,7 @@ pub fn closeCommandLine(ed: *Editor) void {
 }
 
 /// Runs the command line: w, q, wq, x (each optionally with !, and w/wq/x
-/// with a file name), e, set, or a line number.
+/// with a file name), e, or a line number.
 pub fn runCommand(ed: *Editor) !Editor.Action {
     const line = std.mem.trim(u8, ed.command.items, " \t");
     var name_end: usize = 0;
@@ -71,11 +73,6 @@ pub fn runCommand(ed: *Editor) !Editor.Action {
     if (std.ascii.isDigit(line[0])) {
         const n = std.fmt.parseInt(usize, line, 10) catch std.math.maxInt(usize);
         try ed.goToLine(n);
-        return .none;
-    }
-
-    if (std.mem.eql(u8, cmd, "set") or std.mem.eql(u8, cmd, "se")) {
-        _ = settings.set(ed, rest);
         return .none;
     }
 

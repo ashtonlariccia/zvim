@@ -172,6 +172,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
             .command = if (editor.mode == .command) editor.command.items else null,
             .command_prefix = switch (editor.command_kind) {
                 .ex => ':',
+                .zvim => '\\',
                 .search_forward => '/',
                 .search_backward => '?',
             },
@@ -264,8 +265,9 @@ const help =
     \\In the editor: i to type, Esc to stop, :w to save, :q to quit,
     \\:q! to quit without saving. Keys work like Vim's.
     \\
-    \\Settings: one :set command per line in ~/.config/zvim/zvimrc, e.g.
-    \\"set expandtab shiftwidth=4". Type :set in the editor to see them all.
+    \\Settings: type \set in the editor to see them, \set expandtab
+    \\shiftwidth=4 to change them. To keep them, put the same lines ("set
+    \\expandtab shiftwidth=4") in ~/.config/zvim/zvimrc.
     \\
     \\If zvim crashes or the terminal closes with unsaved changes, they're
     \\saved to file.zvim-recover.
