@@ -58,4 +58,5 @@ test {
     _ = @import("Buffer.zig");
     _ = @import("text.zig");
     _ = @import("file.zig");
+    _ = @import("keys.zig");
 }
