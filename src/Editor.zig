@@ -158,6 +158,8 @@ pub const Action = union(enum) {
     write: struct { path: []const u8, then_quit: bool },
     /// Ctrl-Z: stop zvim as a shell job until it's continued.
     @"suspend",
+    /// Load the file at `path` again and hand it to `reloaded`.
+    reload: []const u8,
 };
 
 pub fn init(gpa: Allocator, buffer: Buffer, name: []const u8) !Editor {
@@ -199,6 +201,29 @@ pub fn setMessage(self: *Editor, is_error: bool, comptime fmt: []const u8, args:
 pub fn wrote(self: *Editor, path: []const u8) void {
     self.history.markSaved();
     self.setMessage(false, "\"{s}\" {d}L, {d}B written", .{ path, self.buffer.visibleLineCount(), self.buffer.len });
+}
+
+/// Called after a `reload` action with the freshly loaded buffer: replaces
+/// the text, starts a new undo history, and keeps the cursor's line.
+pub fn reloaded(self: *Editor, buffer: Buffer) !void {
+    const line = self.buffer.lineOf(self.cursor);
+    self.buffer.deinit();
+    self.buffer = buffer;
+    self.history.deinit(self.gpa);
+    self.history = .{};
+    self.mode = .normal;
+    self.pending = .{};
+    self.block_insert = null;
+    self.autoindent_at = null;
+    try self.goToLine(line + 1);
+    self.setMessage(false, "\"{s}\" {d}L, {d}B", .{ self.name.items, self.buffer.visibleLineCount(), self.buffer.len });
+}
+
+/// Moves to the first non-blank of 1-based line `n`, clamped to the text.
+pub fn goToLine(self: *Editor, n: usize) !void {
+    const line = @min(@max(n, 1), self.buffer.visibleLineCount()) - 1;
+    self.cursor = self.buffer.lineStart(line) + text.firstNonBlank(try self.lineText(line));
+    try self.clampCursor();
 }
 
 /// Called after a failed `write` action.

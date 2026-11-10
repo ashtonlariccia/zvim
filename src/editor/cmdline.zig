@@ -61,6 +61,35 @@ pub fn runCommand(ed: *Editor) !Editor.Action {
     const arg = std.mem.trim(u8, rest, " \t");
 
     if (cmd.len == 0 and line.len == 0) return .none;
+
+    // :42 and :$ go to a line.
+    if (std.mem.eql(u8, line, "$")) {
+        try ed.goToLine(std.math.maxInt(usize));
+        return .none;
+    }
+    if (std.ascii.isDigit(line[0])) {
+        const n = std.fmt.parseInt(usize, line, 10) catch std.math.maxInt(usize);
+        try ed.goToLine(n);
+        return .none;
+    }
+
+    // :e reloads the file from disk; :e! even with unsaved changes.
+    if (std.mem.eql(u8, cmd, "e") or std.mem.eql(u8, cmd, "edit")) {
+        if (arg.len > 0) {
+            ed.setMessage(true, "zvim edits one file at a time for now; quit and open {s}", .{arg});
+            return .none;
+        }
+        if (ed.name.items.len == 0) {
+            ed.setMessage(true, "E32: No file name", .{});
+            return .none;
+        }
+        if (ed.isModified() and !bang) {
+            ed.setMessage(true, "E37: No write since last change (add ! to override)", .{});
+            return .none;
+        }
+        return .{ .reload = ed.name.items };
+    }
+
     const write = std.mem.eql(u8, cmd, "w");
     const write_quit = std.mem.eql(u8, cmd, "wq") or std.mem.eql(u8, cmd, "x");
     if (write or write_quit) {
@@ -226,4 +255,34 @@ test "search as the motion of an operator" {
     defer e.deinit();
     try typeKeys(&e, "d/keep\r");
     try expectText(&e, "keep\n");
+}
+
+test ":N and :$ go to a line; numbers past the end go to the last line" {
+    var e = try testEditor("a\n  b\nc\n");
+    defer e.deinit();
+    _ = try runTyped(&e, "2");
+    try expectCursor(&e, 1, 2);
+    _ = try runTyped(&e, "$");
+    try expectCursor(&e, 2, 0);
+    _ = try runTyped(&e, "1");
+    _ = try runTyped(&e, "99");
+    try expectCursor(&e, 2, 0);
+}
+
+test ":e reloads only without unsaved changes, :e! always" {
+    var e: Editor = try .init(testing.allocator, try .init(testing.allocator, "one\ntwo\n"), "f.txt");
+    defer e.deinit();
+    try testing.expectEqualStrings("f.txt", (try runTyped(&e, "e")).reload);
+    try typeKeys(&e, "jx");
+    try testing.expectEqual(Editor.Action.none, try runTyped(&e, "e"));
+    try testing.expectEqualStrings("E37: No write since last change (add ! to override)", e.message.text());
+    try testing.expectEqualStrings("f.txt", (try runTyped(&e, "e!")).reload);
+
+    // The caller loads the file and hands it back.
+    try e.reloaded(try .init(testing.allocator, "one\ntwo\nthree\n"));
+    try expectText(&e, "one\ntwo\nthree\n");
+    try expectCursor(&e, 1, 0); // same line
+    try testing.expect(!e.isModified());
+    try typeKeys(&e, "u"); // a fresh undo history
+    try testing.expectEqualStrings("Already at oldest change", e.message.text());
 }

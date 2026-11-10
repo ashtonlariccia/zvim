@@ -12,8 +12,17 @@ pub const panic = std.debug.FullPanic(crash.panic);
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    if (args.len > 2) fatal("usage: zvim [file]", .{});
-    const path: []const u8 = if (args.len == 2) args[1] else "";
+    var path: []const u8 = "";
+    // +N opens at line N, + at the last line.
+    var start_line: ?usize = null;
+    for (args[1..]) |arg| {
+        if (arg.len > 0 and arg[0] == '+') {
+            start_line = if (arg.len == 1) std.math.maxInt(usize) else std.fmt.parseInt(usize, arg[1..], 10) catch
+                fatal("not a line number: {s}", .{arg});
+        } else if (path.len == 0) {
+            path = arg;
+        } else fatal("usage: zvim [+line] [file]", .{});
+    }
 
     const buffer = if (path.len > 0)
         file.load(init.gpa, init.io, .cwd(), path) catch |err|
@@ -22,6 +31,7 @@ pub fn main(init: std.process.Init) !void {
         try @import("Buffer.zig").init(init.gpa, "");
     var editor: Editor = try .init(init.gpa, buffer, path);
     defer editor.deinit();
+    if (start_line) |n| try editor.goToLine(n);
     noteRecoveryFile(&editor, init.io, path);
 
     // `run` restores the terminal when it returns; anything but a normal
@@ -127,6 +137,13 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
                 switch (try editor.handleKey(key)) {
                     .none => {},
                     .quit => return .quit,
+                    .reload => |reload_path| {
+                        const fresh = file.load(init.gpa, init.io, .cwd(), reload_path) catch |err| {
+                            editor.setMessage(true, "E484: Can't read {s}: {s}", .{ reload_path, @errorName(err) });
+                            continue;
+                        };
+                        try editor.reloaded(fresh);
+                    },
                     .@"suspend" => {
                         term.suspendProcess();
                         size = Terminal.size();
