@@ -26,8 +26,13 @@ pub fn main(init: std.process.Init) !void {
     const out = &out_file.interface;
 
     var size = Terminal.size();
-    var in_buf: [256]u8 = undefined;
+    var in_buf: [4096]u8 = undefined;
+    var in_paste = false;
     while (true) {
+        if (editor.clipboard_pending) {
+            editor.clipboard_pending = false;
+            try copyToClipboard(init.gpa, out, editor.register.text.items);
+        }
         try editor.scrollToCursor(ui.textRows(size), size.cols);
         const pos = try editor.cursorPos();
         const selection: ?ui.Selection = if (try editor.selection()) |sel| .{
@@ -67,7 +72,8 @@ pub fn main(init: std.process.Init) !void {
         switch (try term.next(&in_buf)) {
             .resize => size = Terminal.size(),
             .input => |bytes| {
-                var keys: Decoder = .{ .bytes = bytes };
+                var keys: Decoder = .{ .bytes = bytes, .in_paste = in_paste };
+                defer in_paste = keys.in_paste;
                 while (keys.next()) |key| switch (try editor.handleKey(key)) {
                     .none => {},
                     .quit => return,
@@ -83,6 +89,17 @@ pub fn main(init: std.process.Init) !void {
             },
         }
     }
+}
+
+/// Puts `text` on the system clipboard with OSC 52, which terminals such as
+/// wezterm, kitty and iTerm2 support, also over SSH.
+fn copyToClipboard(gpa: std.mem.Allocator, out: *std.Io.Writer, text: []const u8) !void {
+    const encoder = std.base64.standard.Encoder;
+    const encoded = try gpa.alloc(u8, encoder.calcSize(text.len));
+    defer gpa.free(encoded);
+    try out.writeAll("\x1b]52;c;");
+    try out.writeAll(encoder.encode(encoded, text));
+    try out.writeAll("\x07");
 }
 
 fn modeLabel(editor: *const Editor) []const u8 {

@@ -19,7 +19,13 @@ pub const Key = union(enum) {
     right,
     home,
     end,
+    /// Text pasted into the terminal (bracketed paste), to insert literally.
+    /// Points into the input buffer.
+    paste: []const u8,
 };
+
+const paste_begin = "\x1b[200~";
+const paste_end = "\x1b[201~";
 
 /// Splits one read's worth of input into keys. An escape byte followed by
 /// more bytes in the same read starts an escape sequence (terminals send these
@@ -27,10 +33,26 @@ pub const Key = union(enum) {
 pub const Decoder = struct {
     bytes: []const u8,
     i: usize = 0,
+    /// Inside a bracketed paste. Carry it over from one read to the next,
+    /// since a long paste can span several.
+    in_paste: bool = false,
 
     pub fn next(d: *Decoder) ?Key {
         while (d.i < d.bytes.len) {
             const rest = d.bytes[d.i..];
+            if (d.in_paste) {
+                const end = std.mem.indexOf(u8, rest, paste_end);
+                const pasted = rest[0 .. end orelse rest.len];
+                d.i += if (end) |e| e + paste_end.len else rest.len;
+                if (end != null) d.in_paste = false;
+                if (pasted.len > 0) return .{ .paste = pasted };
+                continue;
+            }
+            if (std.mem.startsWith(u8, rest, paste_begin)) {
+                d.i += paste_begin.len;
+                d.in_paste = true;
+                continue;
+            }
             const b = rest[0];
             switch (b) {
                 0x1b => {
@@ -116,7 +138,14 @@ const testing = std.testing;
 
 fn expectKeys(input: []const u8, expected: []const Key) !void {
     var d: Decoder = .{ .bytes = input };
-    for (expected) |e| try testing.expectEqual(e, d.next().?);
+    for (expected) |e| {
+        const got = d.next().?;
+        if (e == .paste) {
+            try testing.expectEqualStrings(e.paste, got.paste);
+        } else {
+            try testing.expectEqual(e, got);
+        }
+    }
     try testing.expectEqual(@as(?Key, null), d.next());
 }
 
@@ -139,4 +168,21 @@ test "lone escape versus escape sequences" {
 
 test "unknown sequences and invalid bytes are dropped" {
     try expectKeys("\x1b[1;5Pa\xffb", &.{ .{ .char = 'a' }, .{ .char = 'b' } });
+}
+
+test "bracketed paste comes through as literal text" {
+    try expectKeys("x\x1b[200~dd\x1b[A\r:q\x1b[201~y", &.{
+        .{ .char = 'x' },
+        .{ .paste = "dd\x1b[A\r:q" },
+        .{ .char = 'y' },
+    });
+}
+
+test "a paste spanning two reads" {
+    var d: Decoder = .{ .bytes = "\x1b[200~first half" };
+    try testing.expectEqualStrings("first half", d.next().?.paste);
+    try testing.expect(d.in_paste);
+    var d2: Decoder = .{ .bytes = " second\x1b[201~j", .in_paste = d.in_paste };
+    try testing.expectEqualStrings(" second", d2.next().?.paste);
+    try testing.expectEqual(Key{ .char = 'j' }, d2.next().?);
 }

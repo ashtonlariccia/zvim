@@ -14,15 +14,22 @@ characters, a long line and 200 lines of scrolling. Drop throwaway files in
 here freely; everything except this README, `run.sh` and `sample.txt` is
 git-ignored.
 
-Controls so far (a small subset of Vim's):
+Keys work like Vim's. What's supported so far:
 
-- Normal mode: `h` `j` `k` `l` / arrows move, `0` / `$` line start / end,
-  `x` deletes a character
-- Enter insert mode: `i` before the cursor, `a` after, `I` at the first
-  non-blank, `A` at the line end, `o` / `O` on a new line below / above
-- Insert mode: type, Enter, Backspace, Delete, Tab, arrows; Esc to leave
-- Commands: `:w` save, `:w name` save as, `:q` quit (refused with unsaved
-  changes), `:q!` quit anyway, `:wq` / `:x` save and quit
+| | |
+|---|---|
+| Move | `h j k l` / arrows, `w b e W B E`, `0 ^ $`, `gg G` (`5G` = line 5), `f t F T` + char, `; ,`, Ctrl-D / Ctrl-U, Enter / `+` |
+| Counts | before anything: `3j`, `2dw`, `d3w`, `5x`, `3.` |
+| Operators | `d` delete, `y` yank, `c` change, `>` `<` indent: + a motion (`dw`, `y$`, `c2w`, `d/foo`), doubled for lines (`dd yy cc >> <<`) |
+| Shortcuts | `x X s S D C Y`, `J` join, `r` + char replace, `p P` paste, `.` repeat, `u` undo, Ctrl-R redo |
+| Visual | `v` characters, `V` lines, Ctrl-V block; move to select; `o` (`O` in a block) other end; `y d x c > < J p`; block `I` / `A` |
+| Insert | `i a I A o O`; type, Enter, Backspace, Delete, Tab, arrows; Esc |
+| Search | `/text` and `?text` (plain text, not regex), `n N` |
+| Commands | `:w`, `:w name`, `:q`, `:q!`, `:wq`, `:x` |
+
+Yanks also go to your system clipboard (OSC 52, works over SSH in terminals
+that support it, like wezterm). Pasting from your terminal inserts the text
+as-is in any mode. Indenting uses tabs.
 
 The status bar shows the file name, `[+]` for unsaved changes, the mode, the
 terminal size, and the cursor position: `Ln` (line / total lines) and `Col`

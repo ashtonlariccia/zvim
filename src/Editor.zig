@@ -256,6 +256,15 @@ pub fn handleKey(self: *Editor, key: Key) Allocator.Error!Action {
         try self.dot.recording.append(self.gpa, key);
     }
 
+    if (key == .paste) {
+        try self.pasteText(key.paste);
+        // `.` can't replay a paste (its text isn't kept), so it repeats the
+        // change before instead.
+        self.dot.excluded = true;
+        if (self.mode != .insert) try self.history.commit(self.gpa);
+        return .none;
+    }
+
     const action: Action = switch (self.mode) {
         .normal, .visual => blk: {
             try self.normalKey(key);
@@ -1453,6 +1462,41 @@ fn pasteBlock(self: *Editor, reg: []const u8, before: bool, n: usize) !void {
     try self.clampCursor();
 }
 
+/// Text pasted into the terminal: inserted at the cursor in insert mode,
+/// before the cursor in normal and visual mode (as one undo step), and onto
+/// the command line up to its first line break.
+fn pasteText(self: *Editor, raw: []const u8) !void {
+    // Terminals send line breaks as \r; normalize \r\n and \r to \n.
+    var pasted: std.ArrayList(u8) = .empty;
+    defer pasted.deinit(self.gpa);
+    var i: usize = 0;
+    while (i < raw.len) : (i += 1) {
+        if (raw[i] == '\r') {
+            try pasted.append(self.gpa, '\n');
+            if (i + 1 < raw.len and raw[i + 1] == '\n') i += 1;
+        } else try pasted.append(self.gpa, raw[i]);
+    }
+    if (pasted.items.len == 0) return;
+
+    switch (self.mode) {
+        .insert => try self.insertAtCursor(pasted.items),
+        .command => {
+            const line_end = std.mem.indexOfScalar(u8, pasted.items, '\n') orelse pasted.items.len;
+            try self.command.appendSlice(self.gpa, pasted.items[0..line_end]);
+        },
+        .normal, .visual => {
+            self.pending = .{};
+            self.mode = .insert;
+            try self.insertAtCursor(pasted.items);
+            self.mode = .normal;
+            // On the last pasted character, like leaving insert mode.
+            const p = self.toPos(self.cursor);
+            if (p.byte > 0) self.cursor -= p.byte - prevChar(try self.lineText(p.line), p.byte);
+            try self.clampCursor();
+        },
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Insert mode
 
@@ -2339,4 +2383,24 @@ test "block paste past the last line adds lines" {
     try typeKeys(&e, "\x16jy");
     try typeKeys(&e, "GP");
     try expectText(&e, "ab\ncd\nax\nc\n");
+}
+
+test "pasted text is inserted literally in every mode" {
+    var e = try testEditor("ab\n");
+    defer e.deinit();
+    _ = try e.handleKey(.{ .paste = "dd:q\r\nx" }); // normal mode: not run as commands
+    try expectText(&e, "dd:q\nxab\n");
+    try expectCursor(&e, 1, 0);
+    try typeKeys(&e, "u");
+    try expectText(&e, "ab\n"); // one undo step
+
+    try typeKeys(&e, "A");
+    _ = try e.handleKey(.{ .paste = "\tz" });
+    try typeKeys(&e, "!");
+    try expectText(&e, "ab\tz!\n");
+
+    _ = try e.handleKey(.escape);
+    try typeKeys(&e, ":");
+    _ = try e.handleKey(.{ .paste = "w name\rignored" });
+    try testing.expectEqualStrings("w name", e.command.items);
 }
