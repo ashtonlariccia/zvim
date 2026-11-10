@@ -23,6 +23,7 @@ const motions = @import("editor/motions.zig");
 const operators = @import("editor/operators.zig");
 const visual = @import("editor/visual.zig");
 const insert = @import("editor/insert.zig");
+const Settings = @import("editor/settings.zig").Settings;
 const prevChar = text.prevChar;
 const displayCol = text.displayCol;
 
@@ -83,6 +84,7 @@ crlf: bool = false,
 /// automatically. While it's still there (nothing typed), leaving insert
 /// mode or pressing Enter again removes that indentation.
 autoindent_at: ?usize = null,
+settings: Settings = .{},
 /// Ctrl-Z was pressed; `handleKey` returns `.suspend`.
 suspend_requested: bool = false,
 /// The last key's command couldn't run (a motion with nowhere to go, or a
@@ -106,6 +108,9 @@ block_insert: ?struct {
 
 pub const Mode = enum { normal, insert, command, visual };
 
+/// Enough spaces for any indentation setting.
+pub const blanks: [@import("editor/settings.zig").max_width]u8 = @splat(' ');
+
 pub const VisualKind = enum { char, line, block };
 
 pub const CommandKind = enum { ex, search_forward, search_backward };
@@ -117,6 +122,15 @@ pub const Message = struct {
 
     pub fn text(m: *const Message) []const u8 {
         return m.buf[0..m.len];
+    }
+
+    /// Too long a message is cut short.
+    pub fn set(m: *Message, is_error: bool, comptime fmt: []const u8, args: anytype) void {
+        const written = std.fmt.bufPrint(&m.buf, fmt, args) catch |err| switch (err) {
+            error.NoSpaceLeft => m.buf[0..],
+        };
+        m.len = written.len;
+        m.is_error = is_error;
     }
 };
 
@@ -202,11 +216,7 @@ pub fn isModified(self: *const Editor) bool {
 
 /// Shows a message until the next key.
 pub fn setMessage(self: *Editor, is_error: bool, comptime fmt: []const u8, args: anytype) void {
-    const written = std.fmt.bufPrint(&self.message.buf, fmt, args) catch |err| switch (err) {
-        error.NoSpaceLeft => self.message.buf[0..],
-    };
-    self.message.len = written.len;
-    self.message.is_error = is_error;
+    self.message.set(is_error, fmt, args);
 }
 
 /// Called after a successful `write` action.
@@ -595,6 +605,7 @@ test {
     _ = visual;
     _ = insert;
     _ = @import("editor/textobjects.zig");
+    _ = @import("editor/settings.zig");
     _ = h;
 }
 

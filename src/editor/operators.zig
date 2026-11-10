@@ -94,7 +94,7 @@ pub fn operateLines(ed: *Editor, op: Editor.Op, first: usize, last_wanted: usize
         .change => {
             // Like Vim with autoindent, the first line's indentation stays.
             try setLineRegister(ed, start, end);
-            const indent = text.firstNonBlank(try ed.lineText(first));
+            const indent = if (ed.settings.autoindent) text.firstNonBlank(try ed.lineText(first)) else 0;
             try ed.deleteBytes(start + indent, ed.lineEnd(last) - start - indent);
             ed.cursor = start + indent;
             ed.autoindent_at = if (indent > 0) ed.cursor else null;
@@ -106,12 +106,12 @@ pub fn operateLines(ed: *Editor, op: Editor.Op, first: usize, last_wanted: usize
                 const s = try ed.lineText(line);
                 const line_start = ed.buffer.lineStart(line);
                 if (op == .indent) {
-                    if (s.len > 0) try ed.insertBytes(line_start, "\t");
+                    if (s.len > 0) try ed.insertBytes(line_start, indentUnit(ed));
                 } else {
                     var k: usize = 0;
                     if (s.len > 0 and s[0] == '\t') {
                         k = 1;
-                    } else while (k < s.len and k < text.tab_width and s[k] == ' ') k += 1;
+                    } else while (k < s.len and k < indentUnitWidth(ed) and s[k] == ' ') k += 1;
                     try ed.deleteBytes(line_start, k);
                 }
             }
@@ -120,6 +120,15 @@ pub fn operateLines(ed: *Editor, op: Editor.Op, first: usize, last_wanted: usize
             if (n > 2) ed.setMessage(false, "{d} lines {s}ed 1 time", .{ n, if (op == .indent) ">" else "<" });
         },
     }
+}
+
+/// One level of indentation: a tab, or `shiftwidth` spaces with `expandtab`.
+fn indentUnit(ed: *const Editor) []const u8 {
+    return if (ed.settings.expandtab) Editor.blanks[0..ed.settings.shiftwidth] else "\t";
+}
+
+fn indentUnitWidth(ed: *const Editor) usize {
+    return if (ed.settings.expandtab) ed.settings.shiftwidth else text.tab_width;
 }
 
 pub fn setRegister(ed: *Editor, kind: @FieldType(Editor.Register, "kind"), a: usize, b: usize) !void {

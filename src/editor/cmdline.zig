@@ -7,6 +7,7 @@ const text = @import("../text.zig");
 const words = @import("words.zig");
 const normal = @import("normal.zig");
 const motions = @import("motions.zig");
+const settings = @import("settings.zig");
 
 pub fn openCommandLine(ed: *Editor, kind: Editor.CommandKind) void {
     ed.command_return = ed.mode;
@@ -48,8 +49,8 @@ pub fn closeCommandLine(ed: *Editor) void {
     ed.pending = .{};
 }
 
-/// Runs the command line: w, q, wq, x, each optionally with ! and w/wq/x
-/// with a file name.
+/// Runs the command line: w, q, wq, x (each optionally with !, and w/wq/x
+/// with a file name), e, set, or a line number.
 pub fn runCommand(ed: *Editor) !Editor.Action {
     const line = std.mem.trim(u8, ed.command.items, " \t");
     var name_end: usize = 0;
@@ -70,6 +71,11 @@ pub fn runCommand(ed: *Editor) !Editor.Action {
     if (std.ascii.isDigit(line[0])) {
         const n = std.fmt.parseInt(usize, line, 10) catch std.math.maxInt(usize);
         try ed.goToLine(n);
+        return .none;
+    }
+
+    if (std.mem.eql(u8, cmd, "set") or std.mem.eql(u8, cmd, "se")) {
+        _ = settings.set(ed, rest);
         return .none;
     }
 
@@ -136,29 +142,50 @@ pub fn runSearch(ed: *Editor) !void {
 }
 
 /// Finds the next occurrence of the last search from `from`, wrapping
-/// around the end of the text.
+/// around the end of the text. With `ignorecase`, ASCII letters match in
+/// either case, unless `smartcase` is on and the pattern has a capital.
 pub fn search(ed: *Editor, from: usize, forward: bool) !?usize {
     const pattern = ed.last_search.items;
     const all = try ed.buffer.toOwnedSlice(ed.gpa);
     defer ed.gpa.free(all);
+    const has_capital = for (pattern) |c| {
+        if (std.ascii.isUpper(c)) break true;
+    } else false;
+    const fold = ed.settings.ignorecase and !(ed.settings.smartcase and has_capital);
     if (forward) {
         if (from + 1 <= all.len) {
-            if (std.mem.indexOfPos(u8, all, from + 1, pattern)) |i| return i;
+            if (indexOfPos(all, from + 1, pattern, fold)) |i| return i;
         }
-        if (std.mem.indexOf(u8, all, pattern)) |i| {
+        if (indexOfPos(all, 0, pattern, fold)) |i| {
             ed.setMessage(true, "search hit BOTTOM, continuing at TOP", .{});
             return i;
         }
     } else {
-        var i = from;
-        while (i > 0) {
-            i -= 1;
-            if (std.mem.startsWith(u8, all[i..], pattern)) return i;
-        }
-        if (std.mem.lastIndexOf(u8, all, pattern)) |j| {
+        if (lastIndexBefore(all, from, pattern, fold)) |i| return i;
+        if (lastIndexBefore(all, all.len + 1, pattern, fold)) |i| {
             ed.setMessage(true, "search hit TOP, continuing at BOTTOM", .{});
-            return j;
+            return i;
         }
+    }
+    return null;
+}
+
+fn indexOfPos(all: []const u8, start: usize, pattern: []const u8, fold: bool) ?usize {
+    if (!fold) return std.mem.indexOfPos(u8, all, start, pattern);
+    if (pattern.len > all.len) return null;
+    for (start..all.len - pattern.len + 1) |i| {
+        if (std.ascii.startsWithIgnoreCase(all[i..], pattern)) return i;
+    }
+    return null;
+}
+
+/// The last match that starts before `end`.
+fn lastIndexBefore(all: []const u8, end: usize, pattern: []const u8, fold: bool) ?usize {
+    var i = @min(end, all.len + 1);
+    while (i > 0) {
+        i -= 1;
+        const rest = all[i..];
+        if (if (fold) std.ascii.startsWithIgnoreCase(rest, pattern) else std.mem.startsWith(u8, rest, pattern)) return i;
     }
     return null;
 }

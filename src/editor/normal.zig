@@ -280,7 +280,7 @@ pub fn lineShortcut(ed: *Editor, op: Editor.Op, n: usize) !void {
 pub fn openLine(ed: *Editor, above: bool) !void {
     const line = ed.buffer.lineOf(ed.cursor);
     var buf: [256]u8 = undefined;
-    const indent = try ed.indentOf(line, std.math.maxInt(usize), &buf);
+    const indent = try ed.indentOf(line, if (ed.settings.autoindent) std.math.maxInt(usize) else 0, &buf);
     if (above) {
         ed.cursor = ed.buffer.lineStart(line);
         try ed.insertAtCursor("\n");

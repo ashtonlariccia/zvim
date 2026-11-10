@@ -54,6 +54,7 @@ pub fn pasteText(ed: *Editor, raw: []const u8) !void {
 pub fn newLine(ed: *Editor) !void {
     var buf: [256]u8 = undefined;
     const p = ed.toPos(ed.cursor);
+    if (!ed.settings.autoindent) return ed.insertAtCursor("\n");
     const indent = try ed.indentOf(p.line, std.math.maxInt(usize), &buf);
     const s = try ed.lineText(p.line);
     try ed.deleteBytes(ed.cursor, text.firstNonBlank(s[p.byte..]));
@@ -73,7 +74,11 @@ pub fn insertKey(ed: *Editor, key: Key) !void {
             try ed.insertAtCursor(bytes[0..n]);
         },
         .enter => try newLine(ed),
-        .tab => try ed.insertAtCursor("\t"),
+        .tab => if (ed.settings.expandtab) {
+            // Spaces up to the next multiple of shiftwidth.
+            const width = ed.settings.shiftwidth;
+            try ed.insertAtCursor(Editor.blanks[0 .. width - (try ed.cursorPos()).col % width]);
+        } else try ed.insertAtCursor("\t"),
         .backspace => try deleteBeforeCursor(ed),
         .delete => try deleteUnderCursor(ed),
         .escape => {

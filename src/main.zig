@@ -5,6 +5,7 @@ const file = @import("file.zig");
 const Editor = @import("Editor.zig");
 const Decoder = @import("keys.zig").Decoder;
 const crash = @import("crash.zig");
+const settings = @import("editor/settings.zig");
 const build_options = @import("build_options");
 
 /// On a crash, save unsaved changes and restore the terminal first.
@@ -15,6 +16,7 @@ pub fn main(init: std.process.Init) !void {
     var path: []const u8 = "";
     // +N opens at line N, + at the last line.
     var start_line: ?usize = null;
+    var clean = false;
     for (args[1..]) |arg| {
         const help_flag = std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
         const version_flag = std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v");
@@ -25,12 +27,14 @@ pub fn main(init: std.process.Init) !void {
             try stdout.interface.flush();
             return;
         }
-        if (arg.len > 0 and arg[0] == '+') {
+        if (std.mem.eql(u8, arg, "--clean") or std.mem.eql(u8, arg, "-c")) {
+            clean = true;
+        } else if (arg.len > 0 and arg[0] == '+') {
             start_line = if (arg.len == 1) std.math.maxInt(usize) else std.fmt.parseInt(usize, arg[1..], 10) catch
                 fatal("not a line number: {s}", .{arg});
         } else if (path.len == 0) {
             path = arg;
-        } else fatal("usage: zvim [+line] [file]", .{});
+        } else fatal("usage: zvim [-c] [+line] [file]", .{});
     }
 
     const loaded: file.Loaded = if (path.len > 0)
@@ -42,6 +46,7 @@ pub fn main(init: std.process.Init) !void {
     defer editor.deinit();
     editor.crlf = loaded.crlf;
     editor.readonly = isReadOnly(init.io, path);
+    if (!clean) loadSettings(init, &editor);
     if (start_line) |n| try editor.goToLine(n);
     noteRecoveryFile(&editor, init.io, path);
 
@@ -61,6 +66,23 @@ pub fn main(init: std.process.Init) !void {
         }
         std.process.exit(1);
     }
+}
+
+/// Applies the settings file, if there is one: $XDG_CONFIG_HOME/zvim/zvimrc,
+/// or ~/.config/zvim/zvimrc.
+fn loadSettings(init: std.process.Init, editor: *Editor) void {
+    const arena = init.arena.allocator();
+    const env = init.environ_map;
+    const xdg = env.get("XDG_CONFIG_HOME") orelse "";
+    const path = if (xdg.len > 0)
+        std.fs.path.join(arena, &.{ xdg, "zvim", "zvimrc" }) catch return
+    else
+        std.fs.path.join(arena, &.{ env.get("HOME") orelse return, ".config", "zvim", "zvimrc" }) catch return;
+    const contents = std.Io.Dir.cwd().readFileAlloc(init.io, path, arena, .limited(1 << 20)) catch |err| {
+        if (err != error.FileNotFound) editor.setMessage(true, "cannot read {s}: {s}", .{ path, @errorName(err) });
+        return;
+    };
+    settings.load(editor, contents);
 }
 
 /// Whether `path` exists but can't be written by this user.
@@ -229,17 +251,21 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
 }
 
 const help =
-    \\usage: zvim [+line] [file]
+    \\usage: zvim [-c] [+line] [file]
     \\
     \\A small Vim-like editor. Opens `file` (created on the first :w if it
     \\doesn't exist), or an empty buffer.
     \\
     \\  +N             start at line N (+ alone: the last line)
+    \\  -c, --clean    ignore the settings file: stock zvim
     \\  -h, --help     show this help
     \\  -v, --version  show the version
     \\
     \\In the editor: i to type, Esc to stop, :w to save, :q to quit,
     \\:q! to quit without saving. Keys work like Vim's.
+    \\
+    \\Settings: one :set command per line in ~/.config/zvim/zvimrc, e.g.
+    \\"set expandtab shiftwidth=4". Type :set in the editor to see them all.
     \\
     \\If zvim crashes or the terminal closes with unsaved changes, they're
     \\saved to file.zvim-recover.
