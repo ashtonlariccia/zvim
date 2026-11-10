@@ -8,11 +8,13 @@ const Key = @import("../keys.zig").Key;
 const text = @import("../text.zig");
 const words = @import("words.zig");
 const nextChar = text.nextChar;
+const prevChar = text.prevChar;
 const firstNonBlank = text.firstNonBlank;
 const cmdline = @import("cmdline.zig");
 const motions = @import("motions.zig");
 const operators = @import("operators.zig");
 const visual = @import("visual.zig");
+const textobjects = @import("textobjects.zig");
 
 pub fn keyChar(key: Key) ?u21 {
     return switch (key) {
@@ -46,6 +48,10 @@ pub fn normalKey(ed: *Editor, key: Key) !void {
             ed.pending.wait = .none;
             return operators.replaceChars(ed, key);
         },
+        .object => |around| {
+            ed.pending.wait = .none;
+            return applyObject(ed, key, around == .around);
+        },
     }
 
     if (key == .char) {
@@ -76,6 +82,11 @@ pub fn normalKey(ed: *Editor, key: Key) !void {
             'F' => return waitFor(ed, .{ .find = .back_to }),
             'T' => return waitFor(ed, .{ .find = .back_till }),
             'r' => return waitFor(ed, .replace),
+            // After an operator or in visual mode, i and a start a text
+            // object (diw, va"); otherwise they enter insert mode.
+            'i', 'a' => if (ed.pending.op != null or ed.mode == .visual) {
+                return waitFor(ed, .{ .object = if (c == 'i') .inside else .around });
+            },
             // Search keeps the count and operator: d/foo deletes up to foo.
             '/' => return cmdline.openCommandLine(ed, .search_forward),
             '?' => return cmdline.openCommandLine(ed, .search_backward),
@@ -161,6 +172,65 @@ pub fn normalKey(ed: *Editor, key: Key) !void {
         else => {},
     }
     if (ed.mode == .insert) try ed.updateWantCol();
+}
+
+/// The object after i or a: applies the pending operator to it, or in visual
+/// mode selects it.
+fn applyObject(ed: *Editor, key: Key, around: bool) !void {
+    const p = ed.pending;
+    ed.pending = .{};
+    const count = @max(p.count, 1) * @max(p.op_count, 1);
+    const object_key = keyChar(key) orelse {
+        ed.failed = true;
+        return;
+    };
+    const range = (try textobjects.find(ed, object_key, around, count)) orelse {
+        ed.failed = true;
+        return;
+    };
+
+    if (ed.mode == .visual) {
+        switch (range) {
+            .chars => |r| {
+                if (r.end == r.start) {
+                    ed.failed = true;
+                    return;
+                }
+                ed.visual_anchor = r.start;
+                ed.cursor = try lastCharBefore(ed, r.end);
+                if (ed.visual_kind != .char) ed.visual_kind = .char;
+            },
+            .lines => |r| {
+                ed.visual_anchor = ed.buffer.lineStart(r.first);
+                ed.cursor = ed.buffer.lineStart(r.last);
+                ed.visual_kind = .line;
+            },
+        }
+        return ed.updateWantCol();
+    }
+
+    const op = p.op orelse return;
+    switch (range) {
+        .lines => |r| try operators.operateLines(ed, op, r.first, r.last),
+        .chars => |r| {
+            if (op == .indent or op == .outdent) {
+                return operators.operateLines(ed, op, ed.buffer.lineOf(r.start), ed.buffer.lineOf(@max(r.start, r.end -| 1)));
+            }
+            // Only c can act on nothing (ci( between empty brackets).
+            if (r.end == r.start and op != .change) {
+                ed.failed = true;
+                return;
+            }
+            try operators.operateChars(ed, op, r.start, r.end);
+        },
+    }
+}
+
+/// Start of the character that ends just before `end`.
+fn lastCharBefore(ed: *Editor, end: usize) !usize {
+    const p = ed.toPos(end);
+    if (p.byte == 0) return end - 1; // the newline ending the line before
+    return end - (p.byte - prevChar(try ed.lineText(p.line), p.byte));
 }
 
 pub fn waitFor(ed: *Editor, wait: Editor.Pending.Wait) void {

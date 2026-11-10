@@ -22,6 +22,7 @@ Keys work like Vim's. What's supported so far:
 | Counts | before anything: `3j`, `2dw`, `d3w`, `5x`, `3.` |
 | Operators | `d` delete, `y` yank, `c` change, `>` `<` indent: + a motion (`dw`, `y$`, `c2w`, `d/foo`), doubled for lines (`dd yy cc >> <<`) |
 | Shortcuts | `x X s S D C Y`, `J` join, `r` + char replace, `p P` paste, `.` repeat, `u` undo, Ctrl-R redo |
+| Text objects | after an operator or in visual mode: `iw aw` (`iW aW`), `i" a"` `i' a'` `` i` a` ``, `i( a(` (`ib`), `i[ a[`, `i{ a{` (`iB`), `i< a<`, `ip ap`: `diw`, `ci"`, `ya(`, `vip`, `2di(` |
 | Visual | `v` characters, `V` lines, Ctrl-V block; move to select; `o` (`O` in a block) other end; `y d x c > < J p`; block `I` / `A` |
 | Insert | `i a I A o O`; type, Enter, Backspace, Delete, Tab, arrows; Esc |
 | Search | `/text` and `?text` (plain text, not regex), `n N` |

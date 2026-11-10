@@ -17,7 +17,7 @@ pub const Pos = struct { line: usize, byte: usize };
 /// words; letters, digits, '_' and non-ASCII characters form words;
 /// other ASCII punctuation forms words of its own. For WORD motions
 /// (`big`), everything that isn't blank is one class.
-fn class(cp: u21, big: bool) u2 {
+pub fn class(cp: u21, big: bool) u2 {
     if (cp == ' ' or cp == '\t' or cp == '\n') return 0;
     if (big) return 1;
     if (cp >= 0x80 or cp == '_' or std.ascii.isAlphanumeric(@intCast(cp))) return 2;

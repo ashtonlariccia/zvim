@@ -67,7 +67,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
     while (true) {
         if (editor.clipboard_pending) {
             editor.clipboard_pending = false;
-            try copyToClipboard(init.gpa, out, editor.register.text.items);
+            try copyToClipboard(init.gpa, out, editor.clipboard.items);
         }
         try editor.scrollToCursor(ui.textRows(size), size.cols);
         const pos = try editor.cursorPos();

@@ -131,7 +131,7 @@ pub fn blockOperator(ed: *Editor, op: Editor.Op) !void {
             try ed.deleteBytes(ed.buffer.lineStart(line) + r.start, r.end - r.start);
         }
     } else {
-        ed.clipboard_pending = true;
+        try ed.yanked();
     }
 
     const s = try ed.lineText(block.first_line);

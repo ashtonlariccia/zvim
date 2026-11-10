@@ -47,7 +47,7 @@ pub fn operateChars(ed: *Editor, op: Editor.Op, a: usize, b: usize) !void {
     try setRegister(ed, .char, a, b);
     switch (op) {
         .yank => {
-            ed.clipboard_pending = true;
+            try ed.yanked();
             ed.cursor = a;
             try ed.clampCursor();
         },
@@ -76,7 +76,7 @@ pub fn operateLines(ed: *Editor, op: Editor.Op, first: usize, last_wanted: usize
     switch (op) {
         .yank => {
             try setLineRegister(ed, start, end);
-            ed.clipboard_pending = true;
+            try ed.yanked();
             if (ed.buffer.lineOf(ed.cursor) != first) {
                 const s = try ed.lineText(first);
                 ed.cursor = start + @min(byteAtCol(s, ed.want_col), ed.maxByte(s));
@@ -425,4 +425,13 @@ test "a count past the last word end changes only up to it" {
     try typeKeys(&e, "G3cw");
     try typeThenEscape(&e, "x");
     try expectText(&e, "one\n\nx\n");
+}
+
+test "the clipboard gets the yanked text even if a later key changes the register" {
+    var e = try testEditor("keep\ndrop\n");
+    defer e.deinit();
+    try typeKeys(&e, "yyjdd"); // as if typed faster than the screen redraws
+    try testing.expect(e.clipboard_pending);
+    try testing.expectEqualStrings("keep\n", e.clipboard.items);
+    try expectRegister(&e, .line, "drop\n");
 }

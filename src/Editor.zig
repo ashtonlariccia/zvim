@@ -58,7 +58,10 @@ message: Message = .{},
 pending: Pending = .{},
 /// The unnamed register: what y, d, c and x put away and p pastes.
 register: Register = .{},
-/// Set by a yank so the caller can copy the register to the system clipboard.
+/// Text yanked since the caller last took it, for the system clipboard.
+/// Copied at the yank, since later keys in the same read may change the
+/// register before the caller gets to it.
+clipboard: std.ArrayList(u8) = .empty,
 clipboard_pending: bool = false,
 /// The last f, t, F or T, for ; and ,.
 last_find: ?struct { kind: words.FindKind, target: u21 } = null,
@@ -120,8 +123,10 @@ pub const Pending = struct {
     op_count: usize = 0,
     wait: Wait = .none,
 
-    /// Keys that need a following key: g (gg), f/t/F/T (a character), r (a character).
-    pub const Wait = union(enum) { none, g, find: words.FindKind, replace };
+    /// Keys waiting for one more: g (gg), f/t/F/T (a character), r (a
+    /// character), and i/a after an operator or in visual mode (an object).
+    pub const Wait = union(enum) { none, g, find: words.FindKind, replace, object: Around };
+    pub const Around = enum { inside, around };
 
     fn isEmpty(p: Pending) bool {
         return p.count == 0 and p.op == null and p.wait == .none;
@@ -161,6 +166,7 @@ pub fn deinit(self: *Editor) void {
     self.name.deinit(gpa);
     self.command.deinit(gpa);
     self.register.text.deinit(gpa);
+    self.clipboard.deinit(gpa);
     self.last_search.deinit(gpa);
     self.dot.recording.deinit(gpa);
     self.dot.last.deinit(gpa);
@@ -390,6 +396,13 @@ pub fn toPos(self: *Editor, offset: usize) words.Pos {
     return .{ .line = line, .byte = offset - self.buffer.lineStart(line) };
 }
 
+/// Called after a yank: the register goes to the system clipboard.
+pub fn yanked(self: *Editor) !void {
+    self.clipboard.clearRetainingCapacity();
+    try self.clipboard.appendSlice(self.gpa, self.register.text.items);
+    self.clipboard_pending = true;
+}
+
 pub fn byteAt(self: *Editor, pos: usize) u8 {
     var it = self.buffer.chunksFrom(pos);
     return it.next().?[0];
@@ -491,6 +504,7 @@ test {
     _ = operators;
     _ = visual;
     _ = insert;
+    _ = @import("editor/textobjects.zig");
     _ = h;
 }
 
@@ -575,18 +589,20 @@ test "random key sequences keep the editor consistent and fully undoable" {
     // Every key the editor knows, plus multi-key commands, weighted toward
     // short, common ones. Each step picks one and checks the invariants.
     const pool = [_][]const u8{
-        "h",       "j",      "k",      "l",    "w",    "b",  "e",   "W",    "B",       "E",       "0",      "^",     "$",
-        "gg",      "G",      "2G",     "3j",   "fa",   "t ", "Fe",  "T.",   ";",       ",",       "x",      "X",     "s",
-        "D",       "C",      "S",      "Y",    "p",    "P",  "J",   "rz",   "r\r",     "dd",      "yy",     "cc",    "dw",
-        "de",      "db",     "d$",     "y$",   "cw",   ">>", "<<",  ">j",   "u",       "\x12",    ".",      "2.",    "v",
-        "V",       "\x16",   "o",      "O",    "i",    "a",  "I",   "A",    "\x1b",    "abc",     "\r",     "\t",    "\x7f",
+        "h",       "j",      "k",      "l",    "w",    "b",   "e",   "W",    "B",       "E",       "0",      "^",     "$",
+        "gg",      "G",      "2G",     "3j",   "fa",   "t ",  "Fe",  "T.",   ";",       ",",       "x",      "X",     "s",
+        "D",       "C",      "S",      "Y",    "p",    "P",   "J",   "rz",   "r\r",     "dd",      "yy",     "cc",    "dw",
+        "de",      "db",     "d$",     "y$",   "cw",   ">>",  "<<",  ">j",   "u",       "\x12",    ".",      "2.",    "v",
+        "V",       "\x16",   "o",      "O",    "i",    "a",   "I",   "A",    "\x1b",    "abc",     "\r",     "\t",    "\x7f",
         "é",
         "中",
-        "\x1b[3~", "\x1b[A", "\x1b[C", "/a\r", "?e\r", "n",  "N",   "\x04", "\x15",    ":q\r",    ":x\r",   ":zz\r", "y",
-        "d",       "c",      ">",      "<",    "3",    "jj", "vjd", "Vjy",  "\x16jlI", "\x16jlA", "\x16jd", "vep",
+        "\x1b[3~", "\x1b[A", "\x1b[C", "/a\r", "?e\r", "n",   "N",   "\x04", "\x15",    ":q\r",    ":x\r",   ":zz\r", "y",
+        "d",       "c",      ">",      "<",    "3",    "jj",  "vjd", "Vjy",  "\x16jlI", "\x16jlA", "\x16jd", "vep",   "diw",
+        "daw",     "ci\"",   "da(",    "yi{",  "vip",  "vaw", "dap", ">ip",  "d2i(",    "ciW",     "ya'",
     };
     const originals = [_][]const u8{
         "alpha beta\n\tgamma(delta)\n\n  epsilon é 中文\nlast line",
+        "f(a, \"b(c)\", {\n  'd' [e]\n})\n",
         "one\n\ntwo three\n",
         "",
     };
