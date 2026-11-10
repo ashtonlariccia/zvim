@@ -3,6 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const version = @import("build.zig.zon").version;
 
     const exe = b.addExecutable(.{
         .name = "zvim",
@@ -15,7 +16,7 @@ pub fn build(b: *std.Build) void {
     // A crash trigger (Ctrl-\) for testing crash recovery by hand.
     const options = b.addOptions();
     options.addOption(bool, "test_crash", b.option(bool, "test-crash", "Make Ctrl-\\ crash zvim, to test crash recovery") orelse false);
-    options.addOption([]const u8, "version", @import("build.zig.zon").version);
+    options.addOption([]const u8, "version", version);
     exe.root_module.addOptions("build_options", options);
     b.installArtifact(exe);
 
@@ -27,7 +28,9 @@ pub fn build(b: *std.Build) void {
 
     // zig build dist: small release binaries for each platform, in zig-out/dist.
     const dist_step = b.step("dist", "Build release binaries for Linux and macOS into zig-out/dist");
-    const version = @import("build.zig.zon").version;
+    const dist_options = b.addOptions();
+    dist_options.addOption(bool, "test_crash", false);
+    dist_options.addOption([]const u8, "version", version);
     // SHA256SUMS, written once every binary is in place.
     const sums = b.addRunArtifact(b.addExecutable(.{
         .name = "sha256sums",
@@ -48,9 +51,6 @@ pub fn build(b: *std.Build) void {
                 .optimize = .ReleaseSmall,
             }),
         });
-        const dist_options = b.addOptions();
-        dist_options.addOption(bool, "test_crash", false);
-        dist_options.addOption([]const u8, "version", version);
         dist_exe.root_module.addOptions("build_options", dist_options);
         const install = b.addInstallArtifact(dist_exe, .{
             .dest_dir = .{ .override = .{ .custom = "dist" } },
