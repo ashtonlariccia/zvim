@@ -62,6 +62,7 @@ pub fn set(ed: *Editor, args: []const u8) bool {
     var any = false;
     var it = std.mem.tokenizeAny(u8, args, " \t");
     while (it.next()) |arg| {
+        if (arg[0] == '"') break; // the rest is a comment
         any = true;
         if (!setOne(ed, arg)) return false;
     }
@@ -124,7 +125,7 @@ fn showAll(ed: *Editor) void {
 }
 
 /// Applies a settings file: one `set` command per line (a leading : is
-/// fine), with blank lines and lines starting with " ignored. A bad line
+/// fine); blank lines and anything from a " on are ignored. A bad line
 /// is skipped; the first one is reported as the editor's message.
 pub fn load(ed: *Editor, contents: []const u8) void {
     var first_error: Editor.Message = .{};
@@ -201,7 +202,7 @@ test "a settings file: set lines, comments, and the first bad line reported" {
     defer e.deinit();
     load(&e,
         \\" my settings
-        \\set expandtab shiftwidth=2
+        \\set expandtab shiftwidth=2 " two spaces
         \\
         \\  :set nosmartcase
     );
