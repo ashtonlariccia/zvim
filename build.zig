@@ -28,6 +28,17 @@ pub fn build(b: *std.Build) void {
     // zig build dist: small release binaries for each platform, in zig-out/dist.
     const dist_step = b.step("dist", "Build release binaries for Linux and macOS into zig-out/dist");
     const version = @import("build.zig.zon").version;
+    // SHA256SUMS, written once every binary is in place.
+    const sums = b.addRunArtifact(b.addExecutable(.{
+        .name = "sha256sums",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/sha256sums.zig"),
+            .target = b.graph.host,
+        }),
+    }));
+    sums.addDirectoryArg(.{ .relative = .{ .base = .install_prefix, .sub_path = "dist" } });
+    sums.has_side_effects = true;
+    dist_step.dependOn(&sums.step);
     for ([_][]const u8{ "x86_64-linux", "aarch64-linux", "x86_64-macos", "aarch64-macos" }) |triple| {
         const dist_exe = b.addExecutable(.{
             .name = "zvim",
@@ -45,7 +56,8 @@ pub fn build(b: *std.Build) void {
             .dest_dir = .{ .override = .{ .custom = "dist" } },
             .dest_sub_path = b.fmt("zvim-{s}-{s}", .{ version, triple }),
         });
-        dist_step.dependOn(&install.step);
+        sums.addArg(install.dest_sub_path.?);
+        sums.step.dependOn(&install.step);
     }
 
     const tests = b.addTest(.{ .root_module = exe.root_module });

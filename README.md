@@ -11,7 +11,8 @@ Requires Zig 0.17.
 
 To install, copy one binary somewhere on your PATH; there's nothing else.
 `zig build dist` builds small static binaries for Linux (x86_64, aarch64)
-and macOS (x86_64, aarch64) into `zig-out/dist/`, e.g.
+and macOS (x86_64, aarch64) into `zig-out/dist/`, with a `SHA256SUMS` file
+(`sha256sum -c SHA256SUMS`), e.g.
 
     cp zig-out/dist/zvim-0.0.1-x86_64-linux ~/.bin/zvim
 
