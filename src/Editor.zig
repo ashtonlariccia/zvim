@@ -25,6 +25,7 @@ const visual = @import("editor/visual.zig");
 const insert = @import("editor/insert.zig");
 const Settings = @import("editor/settings.zig").Settings;
 const help_page = @import("editor/help.zig");
+const pages = @import("editor/page.zig");
 const prevChar = text.prevChar;
 const displayCol = text.displayCol;
 
@@ -86,11 +87,15 @@ crlf: bool = false,
 /// mode or pressing Enter again removes that indentation.
 autoindent_at: ?usize = null,
 settings: Settings = .{},
-/// The help page, while it's open: it gets the keys and is what's shown
-/// (see help.zig).
-help: ?*Editor = null,
+/// A page open over the text (help, settings): it gets the keys and is
+/// what's shown (see page.zig).
+page: ?*Editor = null,
+/// This editor is such a page.
+is_page: bool = false,
 /// This editor is the help page: nothing may change its text.
 view_only: bool = false,
+/// \settings was typed: the next action is `open_settings`.
+settings_requested: bool = false,
 /// Ctrl-Z was pressed; `handleKey` returns `.suspend`.
 suspend_requested: bool = false,
 /// The last key's command couldn't run (a motion with nowhere to go, or a
@@ -193,6 +198,8 @@ pub const Action = union(enum) {
     @"suspend",
     /// Load the file at `path` again and hand it to `reloaded`.
     reload: []const u8,
+    /// \settings: read the settings file and hand it to `settings.openPage`.
+    open_settings,
 };
 
 pub fn init(gpa: Allocator, buffer: Buffer, name: []const u8) !Editor {
@@ -202,7 +209,7 @@ pub fn init(gpa: Allocator, buffer: Buffer, name: []const u8) !Editor {
 }
 
 pub fn deinit(self: *Editor) void {
-    help_page.close(self);
+    pages.close(self);
     const gpa = self.gpa;
     self.buffer.deinit();
     self.history.deinit(gpa);
@@ -330,7 +337,7 @@ pub fn handleKey(self: *Editor, key: Key) Allocator.Error!Action {
     self.message.len = 0;
     self.failed = false;
 
-    if (self.help != null) return help_page.key(self, key);
+    if (self.page != null) return pages.key(self, key);
 
     if (!self.dot.replaying) {
         if (self.mode == .normal and self.pending.isEmpty()) {
@@ -382,6 +389,10 @@ pub fn handleKey(self: *Editor, key: Key) Allocator.Error!Action {
         self.setMessage(true, "W10: Warning: Changing a readonly file", .{});
     }
 
+    if (self.settings_requested) {
+        self.settings_requested = false;
+        return .open_settings;
+    }
     if (self.suspend_requested) {
         self.suspend_requested = false;
         self.dot.excluded = true;
@@ -626,6 +637,7 @@ test {
     _ = @import("editor/textobjects.zig");
     _ = @import("editor/settings.zig");
     _ = @import("editor/help.zig");
+    _ = @import("editor/page.zig");
     _ = h;
 }
 

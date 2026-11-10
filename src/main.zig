@@ -6,6 +6,7 @@ const Editor = @import("Editor.zig");
 const Decoder = @import("keys.zig").Decoder;
 const crash = @import("crash.zig");
 const settings = @import("editor/settings.zig");
+const pages = @import("editor/page.zig");
 const build_options = @import("build_options");
 
 /// On a crash, save unsaved changes and restore the terminal first.
@@ -72,17 +73,22 @@ pub fn main(init: std.process.Init) !void {
 /// or ~/.config/zvim/zvimrc.
 fn loadSettings(init: std.process.Init, editor: *Editor) void {
     const arena = init.arena.allocator();
-    const env = init.environ_map;
-    const xdg = env.get("XDG_CONFIG_HOME") orelse "";
-    const path = if (xdg.len > 0)
-        std.fs.path.join(arena, &.{ xdg, "zvim", "zvimrc" }) catch return
-    else
-        std.fs.path.join(arena, &.{ env.get("HOME") orelse return, ".config", "zvim", "zvimrc" }) catch return;
+    const path = settingsPath(init) orelse return;
     const contents = std.Io.Dir.cwd().readFileAlloc(init.io, path, arena, .limited(1 << 20)) catch |err| {
         if (err != error.FileNotFound) editor.setMessage(true, "cannot read {s}: {s}", .{ path, @errorName(err) });
         return;
     };
-    settings.load(editor, contents) catch {};
+    settings.load(editor, contents);
+}
+
+fn settingsPath(init: std.process.Init) ?[]const u8 {
+    const arena = init.arena.allocator();
+    const env = init.environ_map;
+    const xdg = env.get("XDG_CONFIG_HOME") orelse "";
+    return if (xdg.len > 0)
+        std.fs.path.join(arena, &.{ xdg, "zvim", "zvimrc" }) catch null
+    else
+        std.fs.path.join(arena, &.{ env.get("HOME") orelse return null, ".config", "zvim", "zvimrc" }) catch null;
 }
 
 /// Whether `path` exists but can't be written by this user.
@@ -145,8 +151,8 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
             editor.clipboard_pending = false;
             try copyToClipboard(init.gpa, out, editor.clipboard.items);
         }
-        // The help page, while open, is what's on screen.
-        const shown = editor.help orelse editor;
+        // A page (help, settings), while open, is what's on screen.
+        const shown = editor.page orelse editor;
         try shown.scrollToCursor(ui.textRows(size), size.cols);
         const pos = try shown.cursorPos();
         const selection: ?ui.Selection = if (try shown.selection()) |sel| .{
@@ -219,7 +225,32 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
                         term.suspendProcess();
                         size = Terminal.size();
                     },
+                    .open_settings => {
+                        const path = settingsPath(init) orelse {
+                            editor.setMessage(true, "No home directory to keep settings in", .{});
+                            continue;
+                        };
+                        const contents: ?[]u8 = std.Io.Dir.cwd().readFileAlloc(init.io, path, init.gpa, .limited(1 << 20)) catch |err| switch (err) {
+                            error.FileNotFound => null,
+                            else => {
+                                editor.setMessage(true, "E484: Can't read {s}: {s}", .{ path, @errorName(err) });
+                                continue;
+                            },
+                        };
+                        defer if (contents) |c| init.gpa.free(c);
+                        try settings.openPage(editor, path, contents);
+                    },
                     .write => |write| {
+                        // A page being saved: the settings file.
+                        if (editor.page) |page| {
+                            if (std.fs.path.dirname(write.path)) |dir| std.Io.Dir.cwd().createDirPath(init.io, dir) catch {};
+                            file.save(&page.buffer, init.io, .cwd(), write.path, false) catch |err| {
+                                page.writeFailed(write.path, err);
+                                continue;
+                            };
+                            try pages.wrote(editor, write.path, write.then_quit);
+                            continue;
+                        }
                         // Don't silently overwrite changes made by something else.
                         const own_file = std.mem.eql(u8, write.path, editor.name.items);
                         if (own_file and !write.force and disk != null and
@@ -270,8 +301,8 @@ const usage =
     \\In the editor, \help explains what zvim adds to Vim's keys.
     \\
     \\Settings: type \set in the editor to see them, \set expandtab
-    \\shiftwidth=4 to change them. To keep them, put the same lines ("set
-    \\expandtab shiftwidth=4") in ~/.config/zvim/zvimrc.
+    \\shiftwidth=4 to change them. To keep them, type \settings: it opens
+    \\the settings file, ~/.config/zvim/zvimrc.
     \\
     \\If zvim crashes or the terminal closes with unsaved changes, they're
     \\saved to file.zvim-recover.

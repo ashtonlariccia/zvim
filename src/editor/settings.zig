@@ -10,6 +10,7 @@
 const std = @import("std");
 const Editor = @import("../Editor.zig");
 const text = @import("../text.zig");
+const pages = @import("page.zig");
 
 pub const Settings = struct {
     /// Searches ignore case...
@@ -36,6 +37,16 @@ const Option = enum {
     shiftwidth,
 
     const short = [_][]const u8{ "ic", "scs", "ai", "et", "ts", "sw" };
+
+    /// For the settings file (see `template`).
+    const about = [_][]const u8{
+        "Searches ignore case...",
+        "...unless the search has a capital letter in it",
+        "New lines start with the indentation of the line above",
+        "Tab and > insert spaces instead of a tab",
+        "How wide a tab looks on screen (1 to 32)",
+        "How many spaces expandtab inserts (1 to 32)",
+    };
 
     fn find(name: []const u8) ?Option {
         for (std.enums.values(Option), short) |option, alias| {
@@ -66,6 +77,10 @@ pub fn runLine(ed: *Editor, line: []const u8) !bool {
     if (std.mem.eql(u8, command, "set") or std.mem.eql(u8, command, "se")) return set(ed, words.rest());
     if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "h")) {
         try @import("help.zig").open(ed);
+        return true;
+    }
+    if (std.mem.eql(u8, command, "settings")) {
+        ed.settings_requested = true;
         return true;
     }
     ed.setMessage(true, "Not a zvim command: {s} (try \\help)", .{std.mem.trim(u8, line, " \t")});
@@ -140,10 +155,10 @@ fn showAll(ed: *Editor) void {
     ed.setMessage(false, "{s}", .{std.mem.trimEnd(u8, buf[0..len], " ")});
 }
 
-/// Applies a settings file: one `\` command per line (the \ itself is
-/// optional); blank lines and anything from a " on are ignored. A bad line
+/// Applies a settings file: one `set` command per line (a leading \ is
+/// fine); blank lines and anything from a " on are ignored. A bad line
 /// is skipped; the first one is reported as the editor's message.
-pub fn load(ed: *Editor, contents: []const u8) !void {
+pub fn load(ed: *Editor, contents: []const u8) void {
     var first_error: Editor.Message = .{};
     var lines = std.mem.splitScalar(u8, contents, '\n');
     var number: usize = 0;
@@ -152,12 +167,50 @@ pub fn load(ed: *Editor, contents: []const u8) !void {
         var line = std.mem.trim(u8, raw, " \t\r");
         if (line.len > 0 and line[0] == '\\') line = line[1..];
         if (line.len == 0 or line[0] == '"') continue;
-        if (!try runLine(ed, line) and first_error.len == 0) {
+        var words = std.mem.tokenizeAny(u8, line, " \t");
+        const command = words.next().?;
+        const ok = if (std.mem.eql(u8, command, "set") or std.mem.eql(u8, command, "se"))
+            set(ed, words.rest())
+        else blk: {
+            ed.setMessage(true, "only set lines work here: {s}", .{line});
+            break :blk false;
+        };
+        if (!ok and first_error.len == 0) {
             const reason = ed.message;
             first_error.set(true, "zvimrc line {d}: {s}", .{ number, reason.text() });
         }
     }
     ed.message = first_error;
+}
+
+/// A settings file listing every setting at its current value, for when
+/// there's no file yet.
+pub fn template(ed: *Editor, gpa: std.mem.Allocator) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.appendSlice(gpa,
+        \\" zvim settings. :w saves this file and applies it; :q goes back.
+        \\" Every setting is listed. "set name" turns one on, "set noname"
+        \\" turns it off, "set name=4" gives it a number.
+        \\
+    );
+    for (std.enums.values(Option), Option.about) |option, about| {
+        try out.print(gpa, "\n\" {s}\n", .{about});
+        switch (valueOf(ed, option)) {
+            .flag => |flag| try out.print(gpa, "set {s}{s}\n", .{ if (flag.*) "" else "no", @tagName(option) }),
+            .number => |number| try out.print(gpa, "set {s}={d}\n", .{ @tagName(option), number.* }),
+        }
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+/// Opens the settings file as a page (see page.zig): `contents` is what
+/// the file at `path` holds, or null if it doesn't exist yet.
+pub fn openPage(ed: *Editor, path: []const u8, contents: ?[]const u8) !void {
+    const generated = if (contents == null) try template(ed, ed.gpa) else null;
+    defer if (generated) |g| ed.gpa.free(g);
+    const page = try pages.open(ed, path, contents orelse generated.?) orelse return;
+    page.setMessage(false, "{s}:w saves and applies, :q goes back", .{if (contents == null) "New settings file. " else ""});
 }
 
 const testing = std.testing;
@@ -219,7 +272,7 @@ test "\\set rejects what it doesn't understand; :set is not a command" {
 test "a settings file: set lines, comments, and the first bad line reported" {
     var e = try testEditor("");
     defer e.deinit();
-    try load(&e,
+    load(&e,
         \\" my settings
         \\set expandtab shiftwidth=2 " two spaces
         \\
@@ -229,13 +282,13 @@ test "a settings file: set lines, comments, and the first bad line reported" {
     try testing.expectEqual(@as(usize, 2), e.settings.shiftwidth);
     try testing.expectEqual(@as(usize, 0), e.message.len);
 
-    try load(&e, "set noet\r\nset wibble\nq!\nset sw=4\n");
+    load(&e, "set noet\r\nset wibble\nq!\nset sw=4\n");
     try testing.expectEqualStrings("zvimrc line 2: E518: Unknown option: wibble", e.message.text());
     try testing.expect(!e.settings.expandtab); // the good lines still apply
     try testing.expectEqual(@as(usize, 4), e.settings.shiftwidth);
 
-    try load(&e, "w out.txt\n");
-    try testing.expectEqualStrings("zvimrc line 1: Not a zvim command: w out.txt (try \\help)", e.message.text());
+    load(&e, "w out.txt\n");
+    try testing.expectEqualStrings("zvimrc line 1: only set lines work here: w out.txt", e.message.text());
 }
 
 test "expandtab: Tab and > insert spaces to the next stop, < removes them" {
@@ -279,4 +332,78 @@ test "smart case: lowercase patterns match any case, a capital makes it exact" {
     try run(&e, "set noignorecase");
     try typeKeys(&e, "gg/foo\r");
     try expectCursor(&e, 2, 0);
+}
+
+test "\\settings opens the settings file as a page; saving applies it" {
+    var e = try testEditor("abc\n");
+    defer e.deinit();
+    try typeKeys(&e, "\\settings");
+    try testing.expectEqual(Editor.Action.open_settings, try e.handleKey(.enter));
+
+    // No file yet: every setting, at its current value.
+    try openPage(&e, "/home/me/.config/zvim/zvimrc", null);
+    const page = e.page.?;
+    try h.expectText(page,
+        \\" zvim settings. :w saves this file and applies it; :q goes back.
+        \\" Every setting is listed. "set name" turns one on, "set noname"
+        \\" turns it off, "set name=4" gives it a number.
+        \\
+        \\" Searches ignore case...
+        \\set ignorecase
+        \\
+        \\" ...unless the search has a capital letter in it
+        \\set smartcase
+        \\
+        \\" New lines start with the indentation of the line above
+        \\set autoindent
+        \\
+        \\" Tab and > insert spaces instead of a tab
+        \\set noexpandtab
+        \\
+        \\" How wide a tab looks on screen (1 to 32)
+        \\set tabstop=8
+        \\
+        \\" How many spaces expandtab inserts (1 to 32)
+        \\set shiftwidth=8
+        \\
+    );
+    try testing.expect(!page.isModified());
+
+    // Edit it: noexpandtab -> expandtab, then :w.
+    try typeKeys(&e, "/noexp\rxx");
+    try testing.expect(!e.settings.expandtab); // not until it's saved
+    try typeKeys(&e, ":w");
+    const action = try e.handleKey(.enter);
+    try testing.expectEqualStrings("/home/me/.config/zvim/zvimrc", action.write.path);
+    try pages.wrote(&e, action.write.path, false);
+    try testing.expect(e.settings.expandtab);
+    try testing.expect(e.page != null and !page.isModified());
+    try testing.expectEqualStrings("Settings saved and applied", page.message.text());
+
+    // A bad line is reported on the page; :q then goes back to the text.
+    try typeThenEscape(&e, "Goset wibble");
+    try typeKeys(&e, ":q\r");
+    try testing.expectEqualStrings("E37: No write since last change (add ! to override)", page.message.text());
+    try typeKeys(&e, ":wq");
+    const wq = try e.handleKey(.enter);
+    try pages.wrote(&e, wq.write.path, wq.write.then_quit);
+    try testing.expectEqualStrings("zvimrc line 22: E518: Unknown option: wibble", page.message.text());
+    try testing.expect(e.page != null);
+    // Fixed: :wq saves, applies and goes back.
+    try typeKeys(&e, "dd:wq");
+    const fixed = try e.handleKey(.enter);
+    try pages.wrote(&e, fixed.write.path, fixed.write.then_quit);
+    try testing.expect(e.page == null);
+    try testing.expectEqualStrings("Settings saved and applied", e.message.text());
+    try expectText(&e, "abc\n");
+}
+
+test "an existing settings file opens as it is" {
+    var e = try testEditor("");
+    defer e.deinit();
+    try openPage(&e, "zvimrc", "set sw=2\n");
+    try h.expectText(e.page.?, "set sw=2\n");
+    try typeKeys(&e, "\\"); // no \ commands on a page
+    try testing.expect(e.page.?.message.is_error);
+    try testing.expectEqual(Editor.Mode.normal, e.page.?.mode);
 }

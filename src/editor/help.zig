@@ -1,13 +1,11 @@
 //! `\help`: the help page, shown in place of the text until q or Escape.
 //!
-//! The page is an editor of its own over the help text, one that refuses
-//! changes (`Editor.view_only`): moving, searching, selecting and yanking
-//! all work as usual, and what is yanked lands in the real editor's register.
+//! The page (see page.zig) refuses changes (`Editor.view_only`): moving,
+//! searching, selecting and yanking all work as usual.
 
 const std = @import("std");
 const Editor = @import("../Editor.zig");
-const Buffer = @import("../Buffer.zig");
-const Key = @import("../keys.zig").Key;
+const pages = @import("page.zig");
 
 pub const name = "zvim help";
 const hint = "q or Esc closes this page";
@@ -21,6 +19,7 @@ pub const text =
     \\
     \\COMMANDS
     \\  \help                 this page
+    \\  \settings             edit the settings file: every setting, explained
     \\  \set                  show every setting
     \\  \set name             turn a setting on       \set expandtab
     \\  \set noname           turn it off             \set noexpandtab
@@ -37,9 +36,11 @@ pub const text =
     \\
     \\SETTINGS FILE
     \\  ~/.config/zvim/zvimrc (or $XDG_CONFIG_HOME/zvim/zvimrc) is read at
-    \\  startup: the same commands, one per line, with or without the \.
+    \\  startup: set commands, one per line, with or without the \.
     \\    " a comment
     \\    set expandtab shiftwidth=4
+    \\  \settings opens it (:w saves and applies it, :q goes back); if there
+    \\  is none yet, it starts as a list of every setting.
     \\  Without the file zvim uses the defaults above. zvim -c ignores it.
     \\
     \\WHAT ZVIM DOES BY ITSELF
@@ -65,52 +66,10 @@ pub const text =
 ;
 
 pub fn open(ed: *Editor) !void {
-    if (ed.help != null or ed.view_only) return;
-    const gpa = ed.gpa;
-    const page = try gpa.create(Editor);
-    errdefer gpa.destroy(page);
-    var buffer: Buffer = try .init(gpa, text);
-    errdefer buffer.deinit();
-    page.* = try .init(gpa, buffer, name);
+    const page = try pages.open(ed, name, text) orelse return;
     page.view_only = true;
     page.readonly = true;
-    page.settings = ed.settings;
-    page.view_rows = ed.view_rows;
     page.setMessage(false, hint, .{});
-    ed.help = page;
-}
-
-pub fn close(ed: *Editor) void {
-    const page = ed.help orelse return;
-    ed.help = null;
-    page.deinit();
-    ed.gpa.destroy(page);
-}
-
-/// A key while the help page is open: q or Escape in normal mode (and :q)
-/// close it; anything else goes to the page.
-pub fn key(ed: *Editor, k: Key) !Editor.Action {
-    const page = ed.help.?;
-    if (page.mode == .normal and page.pending.isEmpty()) {
-        if (k == .escape or (k == .char and k.char == 'q')) {
-            close(ed);
-            return .none;
-        }
-    }
-    switch (try page.handleKey(k)) {
-        .none => {},
-        .quit => close(ed),
-        .@"suspend" => return .@"suspend",
-        .write, .reload => page.setMessage(true, refusal, .{}),
-    }
-    // Something yanked on the page is for use in the text.
-    if (ed.help != null and page.clipboard_pending) {
-        page.clipboard_pending = false;
-        std.mem.swap(Editor.Register, &ed.register, &page.register);
-        std.mem.swap(std.ArrayList(u8), &ed.clipboard, &page.clipboard);
-        ed.clipboard_pending = true;
-    }
-    return .none;
 }
 
 const testing = std.testing;
@@ -121,13 +80,13 @@ test "\\help opens the help page; q, Escape and :q close it" {
     defer e.deinit();
     for ([_][]const u8{ "q", "\x1b", ":q\r" }) |closing| {
         try h.typeKeys(&e, "\\help\r");
-        try testing.expect(e.help != null);
-        try testing.expectEqualStrings(name, e.help.?.name.items);
+        try testing.expect(e.page != null);
+        try testing.expectEqualStrings(name, e.page.?.name.items);
         try h.typeKeys(&e, "jjw");
-        try h.expectCursor(e.help.?, 2, 5);
+        try h.expectCursor(e.page.?, 2, 5);
         try h.expectCursor(&e, 0, 0); // the text underneath is untouched
         try h.typeKeys(&e, closing);
-        try testing.expect(e.help == null);
+        try testing.expect(e.page == null);
     }
     try h.typeKeys(&e, "x");
     try h.expectText(&e, "bc\n");
@@ -141,9 +100,9 @@ test "the help page can be searched, selected and yanked from, into the text" {
     try testing.expectEqualStrings("SETTINGS", e.clipboard.items);
     try h.typeKeys(&e, "v");
     try h.typeThenEscape(&e, ""); // Escape leaves visual mode first...
-    try testing.expect(e.help != null);
+    try testing.expect(e.page != null);
     try h.typeThenEscape(&e, ""); // ...then closes the page
-    try testing.expect(e.help == null);
+    try testing.expect(e.page == null);
     try h.typeKeys(&e, "P");
     try h.expectText(&e, "SETTINGSabc\n");
 }
@@ -152,7 +111,7 @@ test "the help page can't be changed" {
     var e = try h.testEditor("abc\n");
     defer e.deinit();
     try h.typeKeys(&e, "\\help\r");
-    const page = e.help.?;
+    const page = e.page.?;
     for ([_][]const u8{ "x", "dd", "dw", "i", "A", "o", "cw", "rz", "p", "J", ">>", "u", ".", "vd", "Vc", "\x16jI", "3x", "\\help\r", ":w out\r", ":e!\r" }) |keys| {
         try h.typeKeys(&e, keys);
         try testing.expect(page.message.is_error or std.mem.eql(u8, keys, "\\help\r"));
