@@ -326,7 +326,7 @@ test "i{ on a block selects the lines inside" {
     try expectText(&e, "fn main() {\n}\n");
     try typeKeys(&e, "u");
     try typeKeys(&e, "ci{");
-    try typeThenEscape(&e, "    body();");
+    try typeThenEscape(&e, "body();"); // the indentation stays (autoindent)
     try expectText(&e, "fn main() {\n    body();\n}\n");
     try typeKeys(&e, "ya{");
     try expectRegister(&e, .char, "{\n    body();\n}");

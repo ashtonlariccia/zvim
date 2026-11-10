@@ -72,6 +72,10 @@ last_search_forward: bool = true,
 visual_anchor: usize = 0,
 visual_kind: VisualKind = .char,
 dot: Dot = .{},
+/// Where the cursor was left after inserting a new line's indentation
+/// automatically. While it's still there (nothing typed), leaving insert
+/// mode or pressing Enter again removes that indentation.
+autoindent_at: ?usize = null,
 /// Ctrl-Z was pressed; `handleKey` returns `.suspend`.
 suspend_requested: bool = false,
 /// The last key's command couldn't run (a motion with nowhere to go, or a
@@ -413,6 +417,28 @@ pub fn yanked(self: *Editor) !void {
     self.clipboard_pending = true;
 }
 
+/// The indentation (leading blanks) of `line`, at most `max` bytes of it,
+/// copied into `buf`.
+pub fn indentOf(self: *Editor, line: usize, max: usize, buf: []u8) ![]const u8 {
+    const s = try self.lineText(line);
+    const n = @min(text.firstNonBlank(s), max, buf.len);
+    @memcpy(buf[0..n], s[0..n]);
+    return buf[0..n];
+}
+
+/// If the cursor's line holds nothing but indentation that was inserted
+/// automatically, removes it.
+pub fn dropUnusedAutoindent(self: *Editor) !void {
+    const at = self.autoindent_at orelse return;
+    self.autoindent_at = null;
+    if (at != self.cursor) return;
+    const p = self.toPos(self.cursor);
+    const s = try self.lineText(p.line);
+    if (p.byte != s.len or text.firstNonBlank(s) != s.len or s.len == 0) return;
+    self.cursor -= s.len;
+    try self.deleteBytes(self.cursor, s.len);
+}
+
 pub fn byteAt(self: *Editor, pos: usize) u8 {
     var it = self.buffer.chunksFrom(pos);
     return it.next().?[0];
@@ -611,6 +637,7 @@ test "random key sequences keep the editor consistent and fully undoable" {
         "daw",     "ci\"",   "da(",    "yi{",  "vip",  "vaw", "dap", ">ip",  "d2i(",    "ciW",     "ya'",
     };
     const originals = [_][]const u8{
+        "    indented {\n\tmore\n  }\n",
         "alpha beta\n\tgamma(delta)\n\n  epsilon é 中文\nlast line",
         "f(a, \"b(c)\", {\n  'd' [e]\n})\n",
         "one\n\ntwo three\n",

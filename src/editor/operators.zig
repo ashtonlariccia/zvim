@@ -92,9 +92,12 @@ pub fn operateLines(ed: *Editor, op: Editor.Op, first: usize, last_wanted: usize
             if (n > 2) ed.setMessage(false, "{d} fewer lines", .{n});
         },
         .change => {
+            // Like Vim with autoindent, the first line's indentation stays.
             try setLineRegister(ed, start, end);
-            try ed.deleteBytes(start, ed.lineEnd(last) - start);
-            ed.cursor = start;
+            const indent = text.firstNonBlank(try ed.lineText(first));
+            try ed.deleteBytes(start + indent, ed.lineEnd(last) - start - indent);
+            ed.cursor = start + indent;
+            ed.autoindent_at = if (indent > 0) ed.cursor else null;
             ed.mode = .insert;
             try ed.updateWantCol();
         },

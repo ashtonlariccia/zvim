@@ -276,8 +276,11 @@ pub fn lineShortcut(ed: *Editor, op: Editor.Op, n: usize) !void {
     try operators.operateLines(ed, op, line, line + n - 1);
 }
 
+/// o and O: a new line below or above, with the current line's indentation.
 pub fn openLine(ed: *Editor, above: bool) !void {
     const line = ed.buffer.lineOf(ed.cursor);
+    var buf: [256]u8 = undefined;
+    const indent = try ed.indentOf(line, std.math.maxInt(usize), &buf);
     if (above) {
         ed.cursor = ed.buffer.lineStart(line);
         try ed.insertAtCursor("\n");
@@ -286,6 +289,8 @@ pub fn openLine(ed: *Editor, above: bool) !void {
         ed.cursor = ed.lineEnd(line);
         try ed.insertAtCursor("\n");
     }
+    try ed.insertAtCursor(indent);
+    ed.autoindent_at = if (indent.len > 0) ed.cursor else null;
     ed.mode = .insert;
 }
 

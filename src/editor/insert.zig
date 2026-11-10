@@ -45,18 +45,39 @@ pub fn pasteText(ed: *Editor, raw: []const u8) !void {
     }
 }
 
+/// Enter: splits the line, and the new line starts with the same indentation
+/// as this one. Blanks right after the cursor are dropped, so the moved text
+/// starts at the indentation (splitting "foo bar" at the space gives "foo",
+/// "bar"; splitting inside the indentation keeps the line indented).
+/// An Enter on a line that only has automatic indentation clears it first,
+/// so blank lines don't keep trailing blanks.
+pub fn newLine(ed: *Editor) !void {
+    var buf: [256]u8 = undefined;
+    const p = ed.toPos(ed.cursor);
+    const indent = try ed.indentOf(p.line, std.math.maxInt(usize), &buf);
+    const s = try ed.lineText(p.line);
+    try ed.deleteBytes(ed.cursor, text.firstNonBlank(s[p.byte..]));
+    try ed.dropUnusedAutoindent();
+    try ed.insertAtCursor("\n");
+    try ed.insertAtCursor(indent);
+    if (indent.len > 0) ed.autoindent_at = ed.cursor;
+}
+
 pub fn insertKey(ed: *Editor, key: Key) !void {
+    // Typing anything (or moving) keeps a line's automatic indentation.
+    if (key != .enter and key != .escape) ed.autoindent_at = null;
     switch (key) {
         .char => |c| {
             var bytes: [4]u8 = undefined;
             const n = std.unicode.utf8Encode(c, &bytes) catch return;
             try ed.insertAtCursor(bytes[0..n]);
         },
-        .enter => try ed.insertAtCursor("\n"),
+        .enter => try newLine(ed),
         .tab => try ed.insertAtCursor("\t"),
         .backspace => try deleteBeforeCursor(ed),
         .delete => try deleteUnderCursor(ed),
         .escape => {
+            try ed.dropUnusedAutoindent();
             if (ed.block_insert != null) {
                 // The cursor goes back to the block's top-left corner.
                 try visual.finishBlockInsert(ed);
@@ -230,4 +251,58 @@ test "pasted text is inserted literally in every mode" {
     try typeKeys(&e, ":");
     _ = try e.handleKey(.{ .paste = "w name\rignored" });
     try testing.expectEqualStrings("w name", e.command.items);
+}
+
+test "Enter, o and O copy the indentation" {
+    var e = try testEditor("\tif (x) {\n");
+    defer e.deinit();
+    try typeKeys(&e, "A\r  y();");
+    try expectText(&e, "\tif (x) {\n\t  y();\n");
+    try typeKeys(&e, "\r}");
+    try expectText(&e, "\tif (x) {\n\t  y();\n\t  }\n");
+    _ = try e.handleKey(.escape);
+    try typeThenEscape(&e, "kox");
+    try expectText(&e, "\tif (x) {\n\t  y();\n\t  x\n\t  }\n");
+    try typeThenEscape(&e, "ggOw");
+    try expectText(&e, "\tw\n\tif (x) {\n\t  y();\n\t  x\n\t  }\n");
+}
+
+test "unused automatic indentation is removed" {
+    var e = try testEditor("    a\n");
+    defer e.deinit();
+    try typeKeys(&e, "A\r\rb");
+    try expectText(&e, "    a\n\n    b\n"); // the blank line keeps no blanks
+    _ = try e.handleKey(.escape);
+    try typeThenEscape(&e, "o");
+    try expectText(&e, "    a\n\n    b\n\n");
+    try typeKeys(&e, "u");
+    try expectText(&e, "    a\n\n    b\n");
+}
+
+test "Enter inside the indentation keeps the moved line indented" {
+    var e = try testEditor("    a\n");
+    defer e.deinit();
+    try typeKeys(&e, "0i\r"); // at column 0
+    try expectText(&e, "\n    a\n");
+    try expectCursor(&e, 1, 4);
+    _ = try e.handleKey(.escape);
+    try typeKeys(&e, "u0lli\r"); // at column 2
+    try expectText(&e, "  \n    a\n");
+}
+
+test "splitting at a blank drops it from the start of the new line" {
+    var e = try testEditor("foo bar\n");
+    defer e.deinit();
+    try typeKeys(&e, "fbi\x1b[D\r");
+    try expectText(&e, "foo\nbar\n");
+}
+
+test "cc keeps the indentation; pasting is never auto-indented" {
+    var e = try testEditor("    old\n");
+    defer e.deinit();
+    try typeThenEscape(&e, "ccnew");
+    try expectText(&e, "    new\n");
+    try typeKeys(&e, "A");
+    _ = try e.handleKey(.{ .paste = "\nx\ny" });
+    try expectText(&e, "    new\nx\ny\n");
 }
