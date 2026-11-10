@@ -267,7 +267,7 @@ const usage =
     \\In the editor: i to type, Esc to stop, :w to save, :q to quit,
     \\:q! to quit without saving. Keys work like Vim's.
     \\
-    \\In the editor, \help lists the keys.
+    \\In the editor, \help explains what zvim adds to Vim's keys.
     \\
     \\Settings: type \set in the editor to see them, \set expandtab
     \\shiftwidth=4 to change them. To keep them, put the same lines ("set

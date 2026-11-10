@@ -14,62 +14,53 @@ const hint = "q or Esc closes this page";
 pub const refusal = "The help page can't be changed (q or Esc closes it)";
 
 pub const text =
-    \\zvim: a small Vim-like editor
+    \\zvim help                                        (q or Esc closes this)
     \\
-    \\THE BASICS
-    \\  i            start typing (insert mode); Esc goes back to normal mode
-    \\  :w  :q  :wq  save, quit, both            :q!  quit without saving
-    \\  u  Ctrl-R    undo, redo                  .    repeat the last change
-    \\  \help        this page                   \set settings (see below)
+    \\zvim uses Vim's keys and : commands. Its own commands come after \, a
+    \\key Vim leaves unused. This page covers only what is zvim's own.
     \\
-    \\MOVING
-    \\  h j k l      left, down, up, right (or the arrow keys)
-    \\  w b e        next word, back a word, end of word (W B E: by blanks)
-    \\  0 ^ $        start of line, first non-blank, end of line
-    \\  gg G  5G     first line, last line, line 5 (also :5 and :$)
-    \\  f t F T + c  to / before the next (previous) c on the line;  ; ,  repeat
-    \\  Ctrl-D/U     half a screen down / up
-    \\  /text ?text  search forward / backward (plain text);  n N  next, previous
+    \\COMMANDS
+    \\  \help                 this page
+    \\  \set                  show every setting
+    \\  \set name             turn a setting on       \set expandtab
+    \\  \set noname           turn it off             \set noexpandtab
+    \\  \set name=4           give it a number        \set shiftwidth=4
+    \\  \set name?            show one setting
     \\
-    \\CHANGING
-    \\  i a I A      insert before / after the cursor, at line start / end
-    \\  o O          open a line below / above
-    \\  d y c        delete, yank (copy), change + a motion: dw  y$  c2w  d/foo
-    \\  dd yy cc     ...the whole line;  > <  indent, outdent (>> <<)
-    \\  x X s S D C Y  the usual shortcuts
-    \\  p P          paste after / before         J  join lines
-    \\  r + c        replace the character with c
-    \\  3j 2dw 5x    a count before anything repeats it
+    \\SETTINGS                 (short name, default)
+    \\  ignorecase   ic  on   searches ignore case...
+    \\  smartcase    scs on   ...unless the search has a capital letter
+    \\  autoindent   ai  on   new lines copy the indentation of the line above
+    \\  expandtab    et  off  Tab and > insert spaces instead of a tab
+    \\  shiftwidth   sw  8    how many spaces that is
+    \\  tabstop      ts  8    how wide a tab looks
     \\
-    \\TEXT OBJECTS (after an operator, or in visual mode)
-    \\  iw aw        a word            i" a" i' a' i` a`   inside / around quotes
-    \\  i( a( i[ a[ i{ a{ i< a<   inside / around brackets     ip ap  paragraph
-    \\  e.g. diw  ci"  ya(  vip
+    \\SETTINGS FILE
+    \\  ~/.config/zvim/zvimrc (or $XDG_CONFIG_HOME/zvim/zvimrc) is read at
+    \\  startup: the same commands, one per line, with or without the \.
+    \\    " a comment
+    \\    set expandtab shiftwidth=4
+    \\  Without the file zvim uses the defaults above. zvim -c ignores it.
     \\
-    \\SELECTING
-    \\  v V Ctrl-V   select characters, lines, a block; move to extend
-    \\  o            jump to the other end of the selection
-    \\  y d c > < J p   act on the selection      I A  type on every block line
+    \\WHAT ZVIM DOES BY ITSELF
+    \\  Clipboard     every yank also goes to the system clipboard, where the
+    \\                terminal allows it (also over SSH)
+    \\  Pasting       text pasted from the terminal goes in as it is, in any
+    \\                mode, without being indented or run as keys
+    \\  Recovery      after a crash or a lost connection, unsaved text is in
+    \\                name.zvim-recover next to the file (or in /tmp)
+    \\  Read-only     [RO] in the status bar; :w is refused, :w! overwrites
+    \\  Changed file  :w is refused if the file changed on disk since it was
+    \\                read; :w! overwrites, :e! reloads
+    \\  Line endings  Windows (CRLF) files stay that way: [CRLF]
+    \\  This page     move, search, select and yank here as in any file
     \\
-    \\FILES
-    \\  :w name      save under a name            :w!  overwrite regardless
-    \\  :e  :e!      reload from disk (:e! drops unsaved changes)
-    \\  Ctrl-Z       suspend zvim; fg in the shell comes back
-    \\  [RO] read-only file   [CRLF] Windows line endings   [+] unsaved changes
-    \\  Yanks also go to the system clipboard where the terminal allows it.
-    \\  After a crash or lost connection, unsaved text is in name.zvim-recover.
-    \\
-    \\SETTINGS
-    \\  \set                       show them all
-    \\  \set expandtab             Tab and > insert spaces...
-    \\  \set shiftwidth=4          ...this many
-    \\  \set noexpandtab           no- turns one off
-    \\  \set tabstop=4             how wide a tab looks
-    \\  \set noautoindent          new lines don't copy the indentation above
-    \\  \set noignorecase          searches match case exactly
-    \\  \set nosmartcase           /Foo also finds foo (with ignorecase)
-    \\  To keep settings, put the same lines, without the \, in
-    \\  ~/.config/zvim/zvimrc. zvim -c starts without that file.
+    \\DIFFERENT FROM VIM
+    \\  Settings are \set, not :set, and there are only the ones above.
+    \\  / and ? search for plain text, not patterns.
+    \\  One file at a time; :e reloads it, it doesn't open another.
+    \\  One register: no "a, and no macros, marks, :s, windows or tabs.
+    \\  Files are read as UTF-8.
     \\
 ;
 
@@ -133,7 +124,7 @@ test "\\help opens the help page; q, Escape and :q close it" {
         try testing.expect(e.help != null);
         try testing.expectEqualStrings(name, e.help.?.name.items);
         try h.typeKeys(&e, "jjw");
-        try h.expectCursor(e.help.?, 2, 4);
+        try h.expectCursor(e.help.?, 2, 5);
         try h.expectCursor(&e, 0, 0); // the text underneath is untouched
         try h.typeKeys(&e, closing);
         try testing.expect(e.help == null);
@@ -145,16 +136,16 @@ test "\\help opens the help page; q, Escape and :q close it" {
 test "the help page can be searched, selected and yanked from, into the text" {
     var e = try h.testEditor("abc\n");
     defer e.deinit();
-    try h.typeKeys(&e, "\\help\r/THE BASICS\rvey");
+    try h.typeKeys(&e, "\\help\r/SETTINGS FILE\rvey");
     try testing.expect(e.clipboard_pending);
-    try testing.expectEqualStrings("THE", e.clipboard.items);
+    try testing.expectEqualStrings("SETTINGS", e.clipboard.items);
     try h.typeKeys(&e, "v");
     try h.typeThenEscape(&e, ""); // Escape leaves visual mode first...
     try testing.expect(e.help != null);
     try h.typeThenEscape(&e, ""); // ...then closes the page
     try testing.expect(e.help == null);
     try h.typeKeys(&e, "P");
-    try h.expectText(&e, "THEabc\n");
+    try h.expectText(&e, "SETTINGSabc\n");
 }
 
 test "the help page can't be changed" {

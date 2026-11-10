@@ -19,7 +19,7 @@ and macOS (x86_64, aarch64) into `zig-out/dist/`, with a `SHA256SUMS` file
 ## Settings
 
 zvim needs no configuration. Its own commands are typed after `\`, a key Vim
-leaves unused, so `:` stays Vim's: `\help` shows the keys, and
+leaves unused, so `:` stays Vim's: `\help` explains what is zvim's own, and
 `\set expandtab shiftwidth=4` changes settings. To keep
 settings, put the same lines (the `\` is optional) in `~/.config/zvim/zvimrc`
 (or `$XDG_CONFIG_HOME/zvim/zvimrc`); `"` starts a comment.
