@@ -95,11 +95,12 @@ pub fn wordForward(lines: anytype, from: Pos, big: bool) !Pos {
     }
 }
 
-/// `e` / `E`: end of the current or next word. Skips empty lines.
+/// `e` / `E`: end of the current or next word. Skips empty lines. With no
+/// word end left before the end of the text, stays at `from`.
 pub fn wordEnd(lines: anytype, from: Pos, big: bool) !Pos {
     var sc = try Scanner(@TypeOf(lines)).init(lines, from);
-    if (!try sc.forward()) return sc.pos;
-    while (sc.cls(big) == 0) if (!try sc.forward()) return sc.pos;
+    if (!try sc.forward()) return from;
+    while (sc.cls(big) == 0) if (!try sc.forward()) return from;
     const c = sc.cls(big);
     while (true) {
         const here = sc.pos;
@@ -251,6 +252,8 @@ test "e goes to word ends and skips empty lines" {
     p = try wordEnd(l, p, false);
     try expectPos(.{ .line = 0, .byte = 5 }, p); // "." is its own word
     p = try wordEnd(l, p, false);
+    try expectPos(.{ .line = 2, .byte = 1 }, p);
+    p = try wordEnd(l, p, false); // no word end left: stays
     try expectPos(.{ .line = 2, .byte = 1 }, p);
 }
 

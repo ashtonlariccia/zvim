@@ -69,6 +69,9 @@ last_search_forward: bool = true,
 visual_anchor: usize = 0,
 visual_kind: VisualKind = .char,
 dot: Dot = .{},
+/// The last key's command couldn't run (a motion with nowhere to go, or a
+/// missing f/t target). Ends a `.` replay early.
+failed: bool = false,
 /// Set while typing after a block I, A or c; replicated on Escape.
 block_insert: ?struct {
     first_line: usize,
@@ -80,6 +83,9 @@ block_insert: ?struct {
     pad: bool,
     /// After $: append at each line's end.
     to_end: bool = false,
+    /// Lines in the text when typing started. If typing joined or split
+    /// lines, the text isn't copied to the other lines.
+    line_count: usize,
 } = null,
 
 pub const Mode = enum { normal, insert, command, visual };
@@ -251,6 +257,7 @@ pub fn cellWidthAt(self: *Editor, offset: usize) !usize {
 
 pub fn handleKey(self: *Editor, key: Key) Allocator.Error!Action {
     self.message.len = 0;
+    self.failed = false;
 
     if (!self.dot.replaying) {
         if (self.mode == .normal and self.pending.isEmpty()) {
@@ -310,8 +317,24 @@ pub fn insertBytes(self: *Editor, pos: usize, bytes: []const u8) !void {
     self.edits += 1;
 }
 
-/// Deletes from the buffer, recording the deleted bytes for undo.
-pub fn deleteBytes(self: *Editor, pos: usize, n: usize) !void {
+/// Deletes characters from the buffer, recording the deleted bytes for undo.
+/// The last line never disappears this way: a final newline is kept, and
+/// emptying the last line of text without one keeps it as an empty line
+/// (otherwise the newline before it would end the text, and the line would
+/// be gone). Deleting whole lines uses `deleteLines` instead.
+pub fn deleteBytes(self: *Editor, pos: usize, n_wanted: usize) !void {
+    var n = n_wanted;
+    // A final newline belongs to the last line; deleting characters keeps it.
+    if (n > 0 and pos + n == self.buffer.len and self.endsWithNewline()) n -= 1;
+    if (n == 0) return;
+    const empties_last_line = pos + n == self.buffer.len and pos > 0 and
+        !self.endsWithNewline() and self.byteAt(pos - 1) == '\n';
+    try self.deleteLines(pos, n);
+    if (empties_last_line) try self.insertBytes(self.buffer.len, "\n");
+}
+
+/// Deletes from the buffer exactly, recording the deleted bytes for undo.
+pub fn deleteLines(self: *Editor, pos: usize, n: usize) !void {
     if (n == 0) return;
     const removed = try self.gpa.alloc(u8, n);
     defer self.gpa.free(removed);
@@ -365,6 +388,11 @@ pub fn toOffset(self: *Editor, p: words.Pos) usize {
 pub fn toPos(self: *Editor, offset: usize) words.Pos {
     const line = self.buffer.lineOf(offset);
     return .{ .line = line, .byte = offset - self.buffer.lineStart(line) };
+}
+
+pub fn byteAt(self: *Editor, pos: usize) u8 {
+    var it = self.buffer.chunksFrom(pos);
+    return it.next().?[0];
 }
 
 pub fn endsWithNewline(self: *Editor) bool {
@@ -524,4 +552,76 @@ test "o on text without a final newline undoes cleanly" {
     try expectText(&e, "abc\nnew\n");
     try typeKeys(&e, "u");
     try expectText(&e, "abc");
+}
+
+// Kept small so `zig build test` stays fast. To hunt for bugs, raise these
+// (5000 runs of 300 keys takes about 25s) and try other seeds; set TRACE_RUN
+// to a failing run to print its keys as they're typed.
+const STRESS_RUNS = 300;
+const STRESS_KEYS = 100;
+const TRACE_RUN: ?usize = null;
+
+fn checkInvariants(e: *Editor) !void {
+    try testing.expect(e.cursor <= e.buffer.len);
+    const line = e.buffer.lineOf(e.cursor);
+    try testing.expect(line < e.buffer.visibleLineCount());
+    const s = try e.lineText(line);
+    const byte = e.cursor - e.buffer.lineStart(line);
+    try testing.expect(byte <= s.len);
+    if (e.mode == .normal) try testing.expect(byte == 0 or byte < s.len);
+}
+
+test "random key sequences keep the editor consistent and fully undoable" {
+    // Every key the editor knows, plus multi-key commands, weighted toward
+    // short, common ones. Each step picks one and checks the invariants.
+    const pool = [_][]const u8{
+        "h",       "j",      "k",      "l",    "w",    "b",  "e",   "W",    "B",       "E",       "0",      "^",     "$",
+        "gg",      "G",      "2G",     "3j",   "fa",   "t ", "Fe",  "T.",   ";",       ",",       "x",      "X",     "s",
+        "D",       "C",      "S",      "Y",    "p",    "P",  "J",   "rz",   "r\r",     "dd",      "yy",     "cc",    "dw",
+        "de",      "db",     "d$",     "y$",   "cw",   ">>", "<<",  ">j",   "u",       "\x12",    ".",      "2.",    "v",
+        "V",       "\x16",   "o",      "O",    "i",    "a",  "I",   "A",    "\x1b",    "abc",     "\r",     "\t",    "\x7f",
+        "é",
+        "中",
+        "\x1b[3~", "\x1b[A", "\x1b[C", "/a\r", "?e\r", "n",  "N",   "\x04", "\x15",    ":q\r",    ":x\r",   ":zz\r", "y",
+        "d",       "c",      ">",      "<",    "3",    "jj", "vjd", "Vjy",  "\x16jlI", "\x16jlA", "\x16jd", "vep",
+    };
+    const originals = [_][]const u8{
+        "alpha beta\n\tgamma(delta)\n\n  epsilon é 中文\nlast line",
+        "one\n\ntwo three\n",
+        "",
+    };
+    var prng: std.Random.DefaultPrng = .init(0x5eed);
+    const rand = prng.random();
+
+    for (0..STRESS_RUNS) |run| {
+        const original = originals[run % originals.len];
+        if (TRACE_RUN != null and TRACE_RUN.? != run) {
+            for (0..STRESS_KEYS) |_| _ = rand.uintLessThan(usize, pool.len);
+            continue;
+        }
+        var e = try testEditor(original);
+        defer e.deinit();
+        e.view_rows = 5;
+        var picked: [STRESS_KEYS]usize = undefined;
+        for (0..STRESS_KEYS) |step| {
+            picked[step] = rand.uintLessThan(usize, pool.len);
+            const keys = pool[picked[step]];
+            var d: @import("keys.zig").Decoder = .{ .bytes = keys };
+            if (TRACE_RUN != null) std.debug.print("step {d}: {f}\n", .{ step, std.zig.fmtString(keys) });
+            while (d.next()) |key| {
+                _ = try e.handleKey(key);
+                checkInvariants(&e) catch |err| {
+                    std.debug.print("keys:", .{});
+                    for (picked[0 .. step + 1]) |k| std.debug.print(" {f}", .{std.zig.fmtString(pool[k])});
+                    std.debug.print("\n", .{});
+                    return err;
+                };
+            }
+        }
+        // Back to normal mode, then undo everything.
+        _ = try e.handleKey(.escape);
+        _ = try e.handleKey(.escape);
+        for (0..1000) |_| _ = try e.handleKey(.{ .char = 'u' });
+        try expectText(&e, original);
+    }
 }

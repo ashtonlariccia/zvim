@@ -85,7 +85,7 @@ pub fn operateLines(ed: *Editor, op: Editor.Op, first: usize, last_wanted: usize
         },
         .delete => {
             try setLineRegister(ed, start, end);
-            try ed.deleteBytes(start, end - start);
+            try ed.deleteLines(start, end - start);
             const line = @min(first, ed.buffer.visibleLineCount() - 1);
             ed.cursor = ed.buffer.lineStart(line) + firstNonBlank(try ed.lineText(line));
             try ed.clampCursor();
@@ -400,4 +400,29 @@ test "> and < indent and outdent lines" {
     try expectText(&e, "a\n\n\tb\n");
     try typeKeys(&e, "G>>>>");
     try expectText(&e, "a\n\n\t\t\tb\n");
+}
+
+test "emptying the last line of text without a final newline keeps the line" {
+    var e = try testEditor("x\nlast");
+    defer e.deinit();
+    try typeKeys(&e, "jS");
+    try expectCursor(&e, 1, 0);
+    try typeThenEscape(&e, "new");
+    try expectText(&e, "x\nnew\n");
+    try typeKeys(&e, "u");
+    try expectText(&e, "x\nlast");
+
+    try typeKeys(&e, "jd$"); // a character delete of the whole line
+    try testing.expectEqual(@as(usize, 2), e.buffer.visibleLineCount());
+    try typeKeys(&e, "u");
+    try typeKeys(&e, "jdd"); // a line delete removes it
+    try expectText(&e, "x\n");
+}
+
+test "a count past the last word end changes only up to it" {
+    var e = try testEditor("one\n\ntwo three\n");
+    defer e.deinit();
+    try typeKeys(&e, "G3cw");
+    try typeThenEscape(&e, "x");
+    try expectText(&e, "one\n\nx\n");
 }

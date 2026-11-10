@@ -29,12 +29,14 @@ pub fn normalKey(ed: *Editor, key: Key) !void {
             ed.pending.wait = .none;
             if (key == .char and key.char == 'g') return motions.doMotion(ed, .file_start);
             ed.pending = .{};
+            ed.failed = true;
             return;
         },
         .find => |kind| {
             ed.pending.wait = .none;
             const target = keyChar(key) orelse {
                 ed.pending = .{};
+                ed.failed = true;
                 return;
             };
             ed.last_find = .{ .kind = kind, .target = target };
@@ -86,7 +88,9 @@ pub fn normalKey(ed: *Editor, key: Key) !void {
     const count = ed.pending.count;
     const in_visual = ed.mode == .visual;
     if (ed.pending.op != null) {
+        // An operator followed by something that isn't a motion: cancelled.
         ed.pending = .{};
+        ed.failed = true;
         return;
     }
     ed.pending = .{};
@@ -95,7 +99,8 @@ pub fn normalKey(ed: *Editor, key: Key) !void {
         .escape => if (in_visual) try visual.leaveVisual(ed),
         .delete => try shortcut(ed, .delete, .right, count),
         .ctrl => |c| switch (c) {
-            'r' => {
+            // Like u, not in visual mode: the text would change under the selection.
+            'r' => if (!in_visual) {
                 ed.dot.excluded = true;
                 for (0..n) |_| try ed.redo();
             },
@@ -216,7 +221,9 @@ pub fn openLine(ed: *Editor, above: bool) !void {
 /// `.`: replays the keys of the last change, with `count` replacing its count.
 pub fn repeatLastChange(ed: *Editor, count: usize) Allocator.Error!void {
     ed.dot.excluded = true;
-    if (ed.dot.last.items.len == 0) return;
+    // A replay that reaches a `.` (say, typed text that ran as commands after
+    // a failed motion) would otherwise replay itself forever.
+    if (ed.dot.replaying or ed.dot.last.items.len == 0) return;
     const keys = try ed.gpa.dupe(Key, ed.dot.last.items);
     defer ed.gpa.free(keys);
     var start: usize = 0;
@@ -230,7 +237,12 @@ pub fn repeatLastChange(ed: *Editor, count: usize) Allocator.Error!void {
         const s = std.fmt.bufPrint(&digits, "{d}", .{count}) catch unreachable;
         for (s) |d| _ = try ed.handleKey(.{ .char = d });
     }
-    for (keys[start..]) |k| _ = try ed.handleKey(k);
+    // Like Vim, a command that fails ends the replay, so the rest of the
+    // keys (e.g. text meant for insert mode) don't run as commands.
+    for (keys[start..]) |k| {
+        _ = try ed.handleKey(k);
+        if (ed.failed) break;
+    }
 }
 
 pub fn isCountKey(key: Key, first: bool) bool {
@@ -267,4 +279,19 @@ test ". does not repeat motions, undo or yanks" {
     try typeKeys(&e, "lyyu"); // u undoes the x
     try typeKeys(&e, ".");
     try expectText(&e, "bc\n");
+}
+
+test ". stops replaying when a command fails, and never replays itself" {
+    var e = try testEditor("a.b\nxyz\n");
+    defer e.deinit();
+    // cT. from "b" changes ".", then the insert types text containing ".".
+    try typeKeys(&e, "$cT.");
+    try typeThenEscape(&e, "k.x");
+    try expectText(&e, "a.k.xb\nxyz\n");
+    // On the next line there is no "." to go back to: the replay stops
+    // instead of running "k.x" as commands (where "." would recurse).
+    try typeKeys(&e, "j$.");
+    try expectText(&e, "a.k.xb\nxyz\n");
+    try typeKeys(&e, "2.");
+    try expectText(&e, "a.k.xb\nxyz\n");
 }

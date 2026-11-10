@@ -103,7 +103,10 @@ pub fn doMotion(ed: *Editor, m: Motion) !void {
     ed.pending = .{};
     const count = @max(p.count, 1) * @max(p.op_count, 1);
     const has_count = p.count > 0 or p.op_count > 0;
-    const target = (try motionTarget(ed, m, count, has_count, p.op)) orelse return;
+    const target = (try motionTarget(ed, m, count, has_count, p.op)) orelse {
+        ed.failed = true;
+        return;
+    };
     if (p.op) |op| return operators.applyOperator(ed, op, target);
     try moveTo(ed, target);
 }

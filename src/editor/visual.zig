@@ -143,6 +143,7 @@ pub fn blockOperator(ed: *Editor, op: Editor.Op) !void {
             .col = block.start_col,
             .start = ed.cursor,
             .pad = false,
+            .line_count = ed.buffer.visibleLineCount(),
         };
         ed.mode = .insert;
         try ed.updateWantCol();
@@ -177,6 +178,7 @@ pub fn blockInsert(ed: *Editor, append: bool) !void {
         .start = ed.cursor,
         .pad = append,
         .to_end = append and to_end,
+        .line_count = ed.buffer.visibleLineCount(),
     };
     try ed.updateWantCol();
 }
@@ -187,6 +189,7 @@ pub fn finishBlockInsert(ed: *Editor) !void {
     const b = ed.block_insert orelse return;
     ed.block_insert = null;
     if (ed.cursor <= b.start or ed.buffer.lineOf(ed.cursor) != b.first_line) return;
+    if (ed.buffer.visibleLineCount() != b.line_count) return;
     const typed = try ed.gpa.alloc(u8, ed.cursor - b.start);
     defer ed.gpa.free(typed);
     ed.buffer.read(b.start, typed);
@@ -371,4 +374,21 @@ test "block paste past the last line adds lines" {
     try typeKeys(&e, "\x16jy");
     try typeKeys(&e, "GP");
     try expectText(&e, "ab\ncd\nax\nc\n");
+}
+
+test "undo and redo don't run in visual mode" {
+    var e = try testEditor("abc\n");
+    defer e.deinit();
+    try typeKeys(&e, "xu");
+    try typeKeys(&e, "v$\x12uO"); // Ctrl-R and u are ignored; O still works
+    try expectText(&e, "abc\n");
+    try testing.expectEqual(Editor.Mode.visual, e.mode);
+}
+
+test "a block insert that joins lines isn't copied to the other lines" {
+    var e = try testEditor("ab\ncd\nef\n");
+    defer e.deinit();
+    try typeKeys(&e, "j\x16jI");
+    try typeThenEscape(&e, "\x7fX"); // Backspace joins "cd" onto "ab"
+    try expectText(&e, "abXcd\nef\n");
 }
