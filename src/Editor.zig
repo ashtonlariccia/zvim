@@ -66,6 +66,18 @@ last_search_forward: bool = true,
 visual_anchor: usize = 0,
 visual_kind: VisualKind = .char,
 dot: Dot = .{},
+/// Set while typing after a block I, A or c; replicated on Escape.
+block_insert: ?struct {
+    first_line: usize,
+    last_line: usize,
+    col: usize,
+    /// Where typing started on the first line.
+    start: usize,
+    /// Pad short lines out to `col` (A) instead of skipping them (I, c).
+    pad: bool,
+    /// After $: append at each line's end.
+    to_end: bool = false,
+} = null,
 
 pub const Mode = enum { normal, insert, command, visual };
 pub const VisualKind = enum { char, line, block };
@@ -1237,28 +1249,208 @@ fn pasteOverSelection(self: *Editor) Allocator.Error!void {
     self.register.kind = replaced_kind;
 }
 
-// Block (Ctrl-V) selections are completed in the next step.
+// Block (Ctrl-V) selections: a rectangle of display columns.
+
+const Block = struct {
+    first_line: usize,
+    last_line: usize,
+    start_col: usize,
+    /// Exclusive; maxInt after $ (every line to its end).
+    end_col: usize,
+};
+
 fn blockColumns(self: *Editor) !struct { start: usize, end: usize } {
-    _ = self;
-    return .{ .start = 0, .end = 0 };
+    const a = try self.posOf(self.visual_anchor);
+    const c = try self.posOf(self.cursor);
+    const end = if (self.want_col == std.math.maxInt(usize))
+        std.math.maxInt(usize)
+    else
+        @max(a.col + try self.cellWidthAt(self.visual_anchor), c.col + try self.cellWidthAt(self.cursor));
+    return .{ .start = @min(a.col, c.col), .end = end };
 }
+
+fn currentBlock(self: *Editor) !Block {
+    const cols = try self.blockColumns();
+    const la = self.buffer.lineOf(self.visual_anchor);
+    const lc = self.buffer.lineOf(self.cursor);
+    return .{ .first_line = @min(la, lc), .last_line = @max(la, lc), .start_col = cols.start, .end_col = cols.end };
+}
+
+/// The bytes of line `s` inside the block's columns: every character that
+/// overlaps them.
+fn blockBytes(s: []const u8, block: Block) struct { start: usize, end: usize } {
+    const start = byteAtCol(s, block.start_col);
+    if (start >= s.len) return .{ .start = s.len, .end = s.len };
+    const end = if (block.end_col == std.math.maxInt(usize)) s.len else nextChar(s, byteAtCol(s, block.end_col - 1));
+    return .{ .start = start, .end = @max(start, end) };
+}
+
 fn blockOperator(self: *Editor, op: Op) !void {
-    _ = op;
-    try self.leaveVisual();
+    const block = try self.currentBlock();
+    if (op == .indent or op == .outdent) return self.operateLines(op, block.first_line, block.last_line);
+
+    // The register gets the rows of the rectangle.
+    self.register.text.clearRetainingCapacity();
+    for (block.first_line..block.last_line + 1) |line| {
+        const s = try self.lineText(line);
+        const r = blockBytes(s, block);
+        if (line > block.first_line) try self.register.text.append(self.gpa, '\n');
+        try self.register.text.appendSlice(self.gpa, s[r.start..r.end]);
+    }
+    self.register.kind = .block;
+
+    if (op != .yank) {
+        // Bottom up, so earlier lines' offsets stay valid.
+        var line = block.last_line + 1;
+        while (line > block.first_line) {
+            line -= 1;
+            const s = try self.lineText(line);
+            const r = blockBytes(s, block);
+            try self.deleteBytes(self.buffer.lineStart(line) + r.start, r.end - r.start);
+        }
+    } else {
+        self.clipboard_pending = true;
+    }
+
+    const s = try self.lineText(block.first_line);
+    self.cursor = self.buffer.lineStart(block.first_line) + byteAtCol(s, block.start_col);
+    if (op == .change) {
+        self.block_insert = .{
+            .first_line = block.first_line,
+            .last_line = block.last_line,
+            .col = block.start_col,
+            .start = self.cursor,
+            .pad = false,
+        };
+        self.mode = .insert;
+        try self.updateWantCol();
+    } else {
+        try self.clampCursor();
+    }
 }
+
+/// I and A on a block: type once, and on Escape the text is inserted on
+/// every line of the block, at its left edge (I) or right edge (A).
 fn blockInsert(self: *Editor, append: bool) !void {
-    _ = append;
-    try self.leaveVisual();
-}
-fn swapBlockCorner(self: *Editor) !void {
-    std.mem.swap(usize, &self.visual_anchor, &self.cursor);
+    if (self.visual_kind != .block) return; // I and A only apply to blocks
+    const block = try self.currentBlock();
+    const to_end = block.end_col == std.math.maxInt(usize);
+    const col = if (append) block.end_col else block.start_col;
+    self.mode = .insert;
+
+    const line_start = self.buffer.lineStart(block.first_line);
+    const s = try self.lineText(block.first_line);
+    if (append and to_end) {
+        self.cursor = line_start + s.len;
+    } else if (append and displayCol(s, s.len) < col) {
+        try self.insertBytesPadding(block.first_line, col);
+        self.cursor = self.lineEnd(block.first_line);
+    } else {
+        self.cursor = line_start + byteAtCol(s, col);
+    }
+    self.block_insert = .{
+        .first_line = block.first_line,
+        .last_line = block.last_line,
+        .col = col,
+        .start = self.cursor,
+        .pad = append,
+        .to_end = append and to_end,
+    };
     try self.updateWantCol();
 }
+
+/// Pads `line` with spaces to display column `col`.
+fn insertBytesPadding(self: *Editor, line: usize, col: usize) !void {
+    const s = try self.lineText(line);
+    const width = displayCol(s, s.len);
+    if (width >= col) return;
+    const spaces = try self.gpa.alloc(u8, col - width);
+    defer self.gpa.free(spaces);
+    @memset(spaces, ' ');
+    try self.insertBytes(self.lineEnd(line), spaces);
+}
+
+/// On leaving insert mode after a block I, A or c: copies what was typed on
+/// the first line to the other lines of the block.
+fn finishBlockInsert(self: *Editor) !void {
+    const b = self.block_insert orelse return;
+    self.block_insert = null;
+    if (self.cursor <= b.start or self.buffer.lineOf(self.cursor) != b.first_line) return;
+    const typed = try self.gpa.alloc(u8, self.cursor - b.start);
+    defer self.gpa.free(typed);
+    self.buffer.read(b.start, typed);
+    if (std.mem.indexOfScalar(u8, typed, '\n') != null) return;
+
+    for (b.first_line + 1..b.last_line + 1) |line| {
+        const s = try self.lineText(line);
+        const width = displayCol(s, s.len);
+        if (b.to_end) {
+            try self.insertBytes(self.lineEnd(line), typed);
+        } else if (!b.pad and width <= b.col) {
+            // A line that doesn't reach into the block: I and c skip it.
+            continue;
+        } else if (b.pad and width < b.col) {
+            // A pads a short line out to the block's edge.
+            try self.insertBytesPadding(line, b.col);
+            try self.insertBytes(self.lineEnd(line), typed);
+        } else {
+            try self.insertBytes(self.buffer.lineStart(line) + byteAtCol(s, b.col), typed);
+        }
+    }
+    self.cursor = b.start;
+}
+
+/// O in a block: moves to the other corner on the same line.
+fn swapBlockCorner(self: *Editor) !void {
+    if (self.visual_kind != .block) {
+        std.mem.swap(usize, &self.visual_anchor, &self.cursor);
+        return self.updateWantCol();
+    }
+    const a = try self.posOf(self.visual_anchor);
+    const c = try self.posOf(self.cursor);
+    const new_cursor = self.buffer.lineStart(c.line) + byteAtCol(try self.lineText(c.line), a.col);
+    const new_anchor = self.buffer.lineStart(a.line) + byteAtCol(try self.lineText(a.line), c.col);
+    self.cursor = new_cursor;
+    self.visual_anchor = new_anchor;
+    try self.updateWantCol();
+}
+
+/// Pastes a block register as a rectangle at the cursor (p: after the
+/// cursor's character), padding short lines and adding lines as needed.
 fn pasteBlock(self: *Editor, reg: []const u8, before: bool, n: usize) !void {
-    _ = reg;
-    _ = before;
-    _ = n;
-    _ = self;
+    const here = try self.cursorPos();
+    const empty_line = (try self.lineText(here.line)).len == 0;
+    const col = if (before or empty_line) here.col else here.col + try self.cellWidthAt(self.cursor);
+
+    var width: usize = 0;
+    var rows = std.mem.splitScalar(u8, reg, '\n');
+    while (rows.next()) |row| width = @max(width, displayCol(row, row.len));
+
+    var row_text: std.ArrayList(u8) = .empty;
+    defer row_text.deinit(self.gpa);
+    rows = std.mem.splitScalar(u8, reg, '\n');
+    var line = here.line;
+    while (rows.next()) |row| : (line += 1) {
+        if (line >= self.buffer.visibleLineCount()) {
+            if (!self.endsWithNewline()) try self.insertBytes(self.buffer.len, "\n");
+            try self.insertBytes(self.buffer.len, "\n");
+        }
+        const s = try self.lineText(line);
+        const at_end = displayCol(s, s.len) <= col;
+        if (at_end) try self.insertBytesPadding(line, col);
+
+        // Rows are padded to the block's width unless nothing follows them.
+        row_text.clearRetainingCapacity();
+        for (0..n) |i| {
+            try row_text.appendSlice(self.gpa, row);
+            const pad = width - displayCol(row, row.len);
+            if (!at_end or i + 1 < n) try row_text.appendNTimes(self.gpa, ' ', pad);
+        }
+        const s2 = try self.lineText(line);
+        try self.insertBytes(self.buffer.lineStart(line) + byteAtCol(s2, col), row_text.items);
+    }
+    self.cursor = self.buffer.lineStart(here.line) + byteAtCol(try self.lineText(here.line), col);
+    try self.clampCursor();
 }
 
 // ---------------------------------------------------------------------------
@@ -1276,9 +1468,14 @@ fn insertKey(self: *Editor, key: Key) !void {
         .backspace => try self.deleteBeforeCursor(),
         .delete => try self.deleteUnderCursor(),
         .escape => {
-            // Like Vim, leaving insert mode steps back onto the last typed character.
-            const p = self.toPos(self.cursor);
-            if (p.byte > 0) self.cursor -= p.byte - prevChar(try self.lineText(p.line), p.byte);
+            if (self.block_insert != null) {
+                // The cursor goes back to the block's top-left corner.
+                try self.finishBlockInsert();
+            } else {
+                // Like Vim, leaving insert mode steps back onto the last typed character.
+                const p = self.toPos(self.cursor);
+                if (p.byte > 0) self.cursor -= p.byte - prevChar(try self.lineText(p.line), p.byte);
+            }
             self.mode = .normal;
             try self.clampCursor();
         },
@@ -2085,4 +2282,61 @@ test "visual J and visual x on lines" {
     try expectText(&e, "a b c\nd\n");
     try typeKeys(&e, "jvX");
     try expectText(&e, "a b c\n");
+}
+
+test "block selection: y and p paste a rectangle" {
+    var e = try testEditor("abcd\nefgh\nijkl\n");
+    defer e.deinit();
+    try typeKeys(&e, "l\x16jly");
+    try expectRegister(&e, .block, "bc\nfg");
+    try expectCursor(&e, 0, 1);
+    try typeKeys(&e, "$p");
+    try expectText(&e, "abcdbc\nefghfg\nijkl\n");
+    try typeKeys(&e, "u0P");
+    try expectText(&e, "bcabcd\nfgefgh\nijkl\n");
+}
+
+test "block selection: d deletes the rectangle, $ extends to every line's end" {
+    var e = try testEditor("abcd\nef\nijkl\n");
+    defer e.deinit();
+    try typeKeys(&e, "l\x16jjld");
+    try expectText(&e, "ad\ne\nil\n");
+    try expectRegister(&e, .block, "bc\nf\njk");
+    try typeKeys(&e, "u0l\x16jj$d");
+    try expectText(&e, "a\ne\ni\n");
+}
+
+test "block selection: I and A insert on every line" {
+    var e = try testEditor("abc\nd\nefg\n");
+    defer e.deinit();
+    try typeKeys(&e, "l\x16jjI");
+    try typeThenEscape(&e, "> ");
+    try expectText(&e, "a> bc\nd\ne> fg\n"); // the short line is skipped
+    try expectCursor(&e, 0, 1);
+    try typeKeys(&e, "u");
+    try expectText(&e, "abc\nd\nefg\n");
+    try typeKeys(&e, "0l\x16jjA");
+    try typeThenEscape(&e, "|");
+    try expectText(&e, "ab|c\nd |\nef|g\n"); // A pads the short line
+    try typeKeys(&e, "u0\x16jj$A");
+    try typeThenEscape(&e, ";");
+    try expectText(&e, "abc;\nd;\nefg;\n");
+}
+
+test "block selection: c changes every line, O moves to the other corner" {
+    var e = try testEditor("abcd\nefgh\n");
+    defer e.deinit();
+    try typeKeys(&e, "l\x16jlO");
+    try expectCursor(&e, 1, 1);
+    try typeKeys(&e, "c");
+    try typeThenEscape(&e, "XY");
+    try expectText(&e, "aXYd\neXYh\n");
+}
+
+test "block paste past the last line adds lines" {
+    var e = try testEditor("ab\ncd\nx\n");
+    defer e.deinit();
+    try typeKeys(&e, "\x16jy");
+    try typeKeys(&e, "GP");
+    try expectText(&e, "ab\ncd\nax\nc\n");
 }
