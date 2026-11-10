@@ -1,0 +1,13 @@
+" Markdown. Installed by zvim -s; change it as you like (zvim --help
+" explains the format). Words go in groups; each group has a colour in
+" zvimrc.
+extensions md markdown
+
+span keyword # start
+span comment > start
+span comment <!-- -->
+span string ``` ``` start
+span string ` ` oneline
+span type ** ** oneline
+span type __ __ oneline
+span function [ ] oneline

@@ -28,6 +28,9 @@ newlines: usize,
 original_newlines: []const usize,
 /// Offsets of every newline in `add`, ascending.
 add_newlines: std.ArrayList(usize) = .empty,
+/// The lowest offset changed since whoever watches for changes (the
+/// highlighter) last looked and reset it to maxInt.
+changed_from: usize = 0,
 
 const Piece = struct {
     src: enum { original, add },
@@ -78,6 +81,7 @@ pub fn deinit(self: *Buffer) void {
 pub fn insert(self: *Buffer, pos: usize, bytes: []const u8) !void {
     assert(pos <= self.len);
     if (bytes.len == 0) return;
+    self.changed_from = @min(self.changed_from, pos);
 
     const add_start = self.add.items.len;
     const newlines = countNewlines(bytes);
@@ -114,6 +118,7 @@ pub fn insert(self: *Buffer, pos: usize, bytes: []const u8) !void {
 pub fn delete(self: *Buffer, pos: usize, n: usize) !void {
     assert(pos + n <= self.len);
     if (n == 0) return;
+    self.changed_from = @min(self.changed_from, pos);
 
     const first = self.locate(pos);
     const last = self.locate(pos + n);

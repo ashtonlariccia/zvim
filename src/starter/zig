@@ -1,0 +1,23 @@
+" Zig. Installed by zvim -s; change it as you like (zvim --help explains
+" the format). Words go in groups; each group has a colour in zvimrc.
+extensions zig zon
+
+span comment //
+span string " " escape=\ oneline
+span string ' ' escape=\ oneline
+span string \\
+prefix function @
+numbers
+functions
+
+keyword const var fn pub return if else while for switch break continue
+keyword defer errdefer try catch orelse and or comptime inline export extern
+keyword struct enum union error opaque test packed align usingnamespace
+keyword async await suspend resume nosuspend noinline threadlocal callconv
+keyword linksection allowzero volatile noalias asm unreachable
+type bool void type noreturn anyerror anyopaque anytype anyframe
+type u8 u16 u32 u64 u128 usize i8 i16 i32 i64 i128 isize u1 u2 u3 u4 u5 u6 u7 u21
+type f16 f32 f64 f80 f128 comptime_int comptime_float
+type c_char c_short c_ushort c_int c_uint c_long c_ulong c_longlong c_ulonglong
+constant true false null undefined
+todo TODO FIXME XXX NOTE

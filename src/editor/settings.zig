@@ -8,6 +8,7 @@
 const std = @import("std");
 const Editor = @import("../Editor.zig");
 const text = @import("../text.zig");
+const syntax_ = @import("../syntax.zig");
 
 pub const Settings = struct {
     /// Searches ignore case...
@@ -32,6 +33,10 @@ pub const Settings = struct {
     /// Brackets and quotes typed in insert mode come in pairs (see
     /// autoclose.zig).
     autoclose: bool = false,
+    /// Colour files by the language files in syntax/ (see syntax.zig).
+    syntax: bool = true,
+    /// Set by `color` lines, not `set`.
+    colors: syntax_.Colors = syntax_.default_colors,
 };
 
 pub const max_width = 32;
@@ -47,8 +52,9 @@ const Option = enum {
     relativenumber,
     messagetime,
     autoclose,
+    syntax,
 
-    const short = [_][]const u8{ "ic", "scs", "ai", "et", "ts", "sw", "nu", "rnu", "mt", "ac" };
+    const short = [_][]const u8{ "ic", "scs", "ai", "et", "ts", "sw", "nu", "rnu", "mt", "ac", "syn" };
 
     /// For the settings file and --help.
     const about = [_][]const u8{
@@ -62,6 +68,7 @@ const Option = enum {
         "...or each line's distance from the cursor",
         "How long messages show, in ms (0: until a key)",
         "Typed brackets and quotes come in pairs",
+        "Colour files by the language files in syntax/",
     };
 
     /// The numbers a number setting takes.
@@ -94,10 +101,11 @@ fn valueOf(settings: *Settings, option: Option) Value {
         .relativenumber => .{ .flag = &settings.relativenumber },
         .messagetime => .{ .number = &settings.messagetime },
         .autoclose => .{ .flag = &settings.autoclose },
+        .syntax => .{ .flag = &settings.syntax },
     };
 }
 
-/// Applies the settings file. Blank lines and anything from a " on are
+/// Applies the settings file: `set` and `color` lines. Blank lines and anything from a " on are
 /// ignored. A bad line is skipped; the first one is reported as the
 /// editor's message.
 pub fn load(ed: *Editor, contents: []const u8) void {
@@ -112,8 +120,10 @@ pub fn load(ed: *Editor, contents: []const u8) void {
         const command = words.next().?;
         const ok = if (std.mem.eql(u8, command, "set"))
             set(ed, words.rest())
+        else if (std.mem.eql(u8, command, "color"))
+            color(ed, words.rest())
         else blk: {
-            ed.setMessage(true, "only set lines work here: {s}", .{line});
+            ed.setMessage(true, "only set and color lines work here: {s}", .{line});
             break :blk false;
         };
         if (!ok and first_error.len == 0) {
@@ -123,6 +133,32 @@ pub fn load(ed: *Editor, contents: []const u8) void {
     }
     ed.message = first_error;
     text.tab_width = ed.settings.tabstop;
+}
+
+/// The arguments of a `color` line: groups, then the colour they get.
+fn color(ed: *Editor, args: []const u8) bool {
+    const end = std.mem.indexOfScalar(u8, args, '"') orelse args.len;
+    var words: [16][]const u8 = undefined;
+    var n: usize = 0;
+    var it = std.mem.tokenizeAny(u8, args[0..end], " \t");
+    while (it.next()) |word| : (n += 1) {
+        if (n == words.len) break;
+        words[n] = word;
+    }
+    if (n < 2) {
+        ed.setMessage(true, "color needs groups and a colour: color keyword type magenta", .{});
+        return false;
+    }
+    const value = syntax_.Color.parse(words[n - 1]) orelse {
+        ed.setMessage(true, "not a colour: {s} (a name like green or brightblue, #rrggbb, or none)", .{words[n - 1]});
+        return false;
+    };
+    for (words[0 .. n - 1]) |name| if (std.meta.stringToEnum(syntax_.Group, name) == null) {
+        ed.setMessage(true, "not a group: {s} (comment string number keyword type constant function todo)", .{name});
+        return false;
+    };
+    for (words[0 .. n - 1]) |name| ed.settings.colors.set(std.meta.stringToEnum(syntax_.Group, name).?, value);
+    return true;
 }
 
 /// The arguments of a `set` line. Returns false, with the reason as the
@@ -184,6 +220,19 @@ pub fn template(w: *std.Io.Writer) !void {
             .number => |number| try w.print("set {s}={d}\n", .{ @tagName(option), number.* }),
         }
     }
+    try w.writeAll(
+        \\
+        \\" Colours for syntax highlighting, by group: "color group... colour".
+        \\" A colour is a name (red, brightblue, grey...), #rrggbb, or none.
+        \\" What's in each group is up to the language files in syntax/.
+        \\
+    );
+    try writeColors(w, "color {s: <8} {f}\n");
+}
+
+/// Each group with its default colour, in `fmt` (group name, colour).
+pub fn writeColors(w: *std.Io.Writer, comptime fmt: []const u8) !void {
+    for (std.enums.values(syntax_.Group)) |group| try w.print(fmt, .{ @tagName(group), syntax_.default_colors.get(group) });
 }
 
 /// The settings, for --help: name, short name, default, what it does.
@@ -228,7 +277,7 @@ test "a settings file: set lines, comments, and the first bad line reported" {
     try testing.expectEqual(@as(usize, 4), e.settings.shiftwidth);
 
     load(&e, "\\set et\n");
-    try testing.expectEqualStrings("zvimrc line 1: only set lines work here: \\set et", e.message.text());
+    try testing.expectEqualStrings("zvimrc line 1: only set and color lines work here: \\set et", e.message.text());
 }
 
 test "bad values are refused and leave the setting as it was" {
@@ -291,6 +340,21 @@ test "the settings file zvim -s starts from lists every setting at its default" 
         \\" Typed brackets and quotes come in pairs
         \\set noautoclose
         \\
+        \\" Colour files by the language files in syntax/
+        \\set syntax
+        \\
+        \\" Colours for syntax highlighting, by group: "color group... colour".
+        \\" A colour is a name (red, brightblue, grey...), #rrggbb, or none.
+        \\" What's in each group is up to the language files in syntax/.
+        \\color comment  brightblack
+        \\color string   green
+        \\color number   red
+        \\color keyword  magenta
+        \\color type     yellow
+        \\color constant red
+        \\color function blue
+        \\color todo     brightyellow
+        \\
     , w.buffered());
     // Loading it changes nothing.
     var e = try testEditor("");
@@ -315,6 +379,7 @@ test "the settings list for --help" {
         \\  relativenumber rnu off  ...or each line's distance from the cursor
         \\  messagetime    mt  1000 How long messages show, in ms (0: until a key)
         \\  autoclose      ac  off  Typed brackets and quotes come in pairs
+        \\  syntax         syn on   Colour files by the language files in syntax/
         \\
     , w.buffered());
 }
@@ -360,4 +425,28 @@ test "smart case: lowercase patterns match any case, a capital makes it exact" {
     load(&e, "set noignorecase");
     try typeKeys(&e, "gg/foo\r");
     try expectCursor(&e, 2, 0);
+}
+
+test "color lines give one or more groups a colour" {
+    var e = try testEditor("");
+    defer e.deinit();
+    load(&e,
+        \\color keyword type #e5c07b " both
+        \\color comment grey
+        \\color string none
+    );
+    try testing.expectEqual(@as(usize, 0), e.message.len);
+    const Color = syntax_.Color;
+    try testing.expectEqual(Color{ .rgb = .{ 0xe5, 0xc0, 0x7b } }, e.settings.colors.get(.keyword));
+    try testing.expectEqual(Color{ .rgb = .{ 0xe5, 0xc0, 0x7b } }, e.settings.colors.get(.type));
+    try testing.expectEqual(Color{ .ansi = 8 }, e.settings.colors.get(.comment));
+    try testing.expectEqual(Color.none, e.settings.colors.get(.string));
+
+    load(&e, "color keyword blurple");
+    try testing.expectEqualStrings("zvimrc line 1: not a colour: blurple (a name like green or brightblue, #rrggbb, or none)", e.message.text());
+    load(&e, "color keywords red");
+    try testing.expectEqualStrings("zvimrc line 1: not a group: keywords (comment string number keyword type constant function todo)", e.message.text());
+    load(&e, "color red");
+    try testing.expectEqualStrings("zvimrc line 1: color needs groups and a colour: color keyword type magenta", e.message.text());
+    try testing.expectEqual(Color{ .rgb = .{ 0xe5, 0xc0, 0x7b } }, e.settings.colors.get(.keyword));
 }

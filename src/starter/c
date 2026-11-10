@@ -1,0 +1,22 @@
+" C and C++ headers. Installed by zvim -s; change it as you like (zvim
+" --help explains the format). Words go in groups; each group has a colour
+" in zvimrc.
+extensions c h
+
+span comment //
+span comment /* */
+span string " " escape=\ oneline
+span string ' ' escape=\ oneline
+prefix keyword #
+numbers
+functions
+
+keyword if else while for do switch case default break continue return goto
+keyword struct union enum typedef sizeof static extern const volatile inline
+keyword register restrict auto _Alignas _Alignof _Atomic _Generic _Noreturn
+keyword _Static_assert _Thread_local
+type void char short int long float double signed unsigned bool _Bool _Complex
+type size_t ssize_t ptrdiff_t intptr_t uintptr_t off_t FILE
+type int8_t int16_t int32_t int64_t uint8_t uint16_t uint32_t uint64_t
+constant NULL true false EOF stdin stdout stderr
+todo TODO FIXME XXX NOTE
