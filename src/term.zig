@@ -17,7 +17,7 @@ const stdin = posix.STDIN_FILENO;
 const stdout = posix.STDOUT_FILENO;
 
 const enter_seq = "\x1b[?1049h\x1b[?25l"; // alternate screen, hide cursor
-const leave_seq = "\x1b[?25h\x1b[?1049l"; // show cursor, main screen
+const leave_seq = "\x1b[0 q\x1b[?25h\x1b[?1049l"; // default cursor shape, show cursor, main screen
 
 /// Self-pipe: the SIGWINCH handler writes a byte here so poll() wakes up.
 var resize_pipe: [2]posix.fd_t = .{ -1, -1 };

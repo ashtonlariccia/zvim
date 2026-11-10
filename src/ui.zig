@@ -20,8 +20,8 @@ const sync_begin = "\x1b[?2026h"; // synchronized output: no tearing mid-frame
 const sync_end = "\x1b[?2026l";
 const reverse = "\x1b[7m";
 const reset = "\x1b[m";
-
-const tab_width = 8;
+const hide_cursor = "\x1b[?25l";
+const show_cursor = "\x1b[?25h";
 
 /// What to show.
 pub const View = struct {
@@ -32,12 +32,33 @@ pub const View = struct {
     top: usize,
     /// First visible display column (0-based); scrolls long lines sideways.
     left: usize = 0,
+    /// Cursor line and display column (0-based).
+    cursor: Cursor = .{},
+    cursor_shape: CursorShape = .block,
+    /// Shown after the name, e.g. "-- INSERT --".
+    mode: []const u8 = "",
+    /// Unsaved changes, shown as [+].
+    modified: bool = false,
+};
+
+pub const Cursor = struct { line: usize = 0, col: usize = 0 };
+
+pub const CursorShape = enum {
+    block,
+    bar,
+
+    fn sequence(shape: CursorShape) []const u8 {
+        return switch (shape) {
+            .block => "\x1b[2 q",
+            .bar => "\x1b[6 q",
+        };
+    }
 };
 
 /// Draws the visible lines of the buffer, with `~` past the end of the text,
-/// and a status bar in the bottom row.
+/// a status bar in the bottom row, and the cursor.
 pub fn draw(w: *std.Io.Writer, size: Size, view: View) !void {
-    try w.writeAll(sync_begin);
+    try w.writeAll(sync_begin ++ hide_cursor);
     defer w.writeAll(sync_end) catch {};
 
     const cols: usize = size.cols;
@@ -61,54 +82,61 @@ pub fn draw(w: *std.Io.Writer, size: Size, view: View) !void {
         try w.print("\x1b[{d};1H", .{size.rows});
         try drawStatus(w, size, view, lines);
     }
-}
 
-/// How far `left` may scroll: until the end of the widest visible line
-/// reaches the right edge.
-pub fn maxLeft(size: Size, view: View) usize {
-    const lines = view.buffer.visibleLineCount();
-    var widest: usize = 0;
-    for (0..textRows(size)) |r| {
-        const line = view.top + r;
-        if (line >= lines) break;
-        var chars = lineChars(view.buffer, line);
-        var col: usize = 0;
-        while (chars.next()) |g| col += cellWidth(g.cp, col);
-        widest = @max(widest, col);
+    // Show the cursor only when it is on screen.
+    const c = view.cursor;
+    if (c.line >= view.top and c.line - view.top < textRows(size) and
+        c.col >= view.left and c.col - view.left < cols)
+    {
+        try w.print("\x1b[{d};{d}H", .{ c.line - view.top + 1, c.col - view.left + 1 });
+        try w.writeAll(view.cursor_shape.sequence());
+        try w.writeAll(show_cursor);
     }
-    return widest -| size.cols;
 }
 
-fn textRows(size: Size) usize {
+pub fn textRows(size: Size) usize {
     return if (size.rows >= 2) size.rows - 1 else size.rows;
 }
 
-/// File name on the left, dimensions and position on the right, in reverse
-/// video across the whole row. Parts that don't fit are left out.
+/// File name and mode on the left, dimensions and cursor position on the
+/// right, in reverse video across the whole row. When space is short the
+/// right side shrinks first; the left side goes only if even that won't fit.
 fn drawStatus(w: *std.Io.Writer, size: Size, view: View, lines: usize) !void {
     const cols: usize = size.cols;
 
     // The right side shrinks in stages until it fits.
     var bufs: [3][96]u8 = undefined;
     const stages = [_][]const u8{
-        try std.fmt.bufPrint(&bufs[0], "{d}x{d}  Ln {d}/{d}  Col {d}", .{ size.cols, size.rows, view.top + 1, lines, view.left + 1 }),
-        try std.fmt.bufPrint(&bufs[1], "Ln {d}/{d}  Col {d}", .{ view.top + 1, lines, view.left + 1 }),
-        try std.fmt.bufPrint(&bufs[2], "Ln {d}/{d}", .{ view.top + 1, lines }),
+        try std.fmt.bufPrint(&bufs[0], "{d}x{d}  Ln {d}/{d}  Col {d}", .{ size.cols, size.rows, view.cursor.line + 1, lines, view.cursor.col + 1 }),
+        try std.fmt.bufPrint(&bufs[1], "Ln {d}/{d}  Col {d}", .{ view.cursor.line + 1, lines, view.cursor.col + 1 }),
+        try std.fmt.bufPrint(&bufs[2], "Ln {d}/{d}", .{ view.cursor.line + 1, lines }),
     };
+    var name_buf: [std.Io.Dir.max_path_bytes + 32]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buf, "{s}{s}{s}{s}", .{
+        if (view.name.len > 0) view.name else "[new]",
+        if (view.modified) " [+]" else "",
+        if (view.mode.len > 0) "  " else "",
+        view.mode,
+    }) catch view.name;
+    var name_chars: SliceChars = .{ .bytes = name };
+    const name_cols = try drawChars(null, &name_chars, 0, cols);
+
+    var show_name = false;
     var right: []const u8 = "";
-    for (stages) |s| if (s.len <= cols) {
-        right = s;
+    for (stages) |stage| if (1 + name_cols + 1 + stage.len + 1 <= cols) {
+        show_name = true;
+        right = stage;
+        break;
+    };
+    if (!show_name) for (stages) |stage| if (stage.len <= cols) {
+        right = stage;
         break;
     };
     const right_pad: usize = if (right.len < cols) 1 else 0;
 
-    const name = if (view.name.len > 0) view.name else "[new]";
-    var name_chars: SliceChars = .{ .bytes = name };
-    const name_cols = try drawChars(null, &name_chars, 0, cols);
-
     try w.writeAll(reverse);
     var used: usize = 0;
-    if (1 + name_cols + 1 + right.len + right_pad <= cols) {
+    if (show_name) {
         try w.writeAll(" ");
         name_chars = .{ .bytes = name };
         used = 1 + try drawChars(w, &name_chars, 0, name_cols);
@@ -174,18 +202,6 @@ fn lineChars(buffer: *const Buffer, line: usize) BufferChars {
     return .{ .chunks = buffer.chunksFrom(buffer.lineStart(line)) };
 }
 
-/// Columns `cp` occupies when it starts at display column `col`.
-fn cellWidth(cp: u21, col: usize) usize {
-    if (cp == '\t') return tab_width - col % tab_width;
-    if (cp < 0x20 or cp == 0x7f) return 2; // shown as ^X
-    if (isUnprintable(cp)) return 1; // shown as U+FFFD
-    return text.width(cp);
-}
-
-fn isUnprintable(cp: u21) bool {
-    return cp == text.replacement or (cp >= 0x80 and cp < 0xa0);
-}
-
 /// Writes the characters from `chars` that fall within display columns
 /// [left, left + max_cols) as terminal-safe text, starting at screen column 1,
 /// and returns the screen columns used. A character cut by either edge is
@@ -200,7 +216,7 @@ fn drawChars(w: ?*std.Io.Writer, chars: anytype, left: usize, max_cols: usize) !
     var drew_prev = false;
     while (chars.next()) |g| {
         if (col >= right) break;
-        const cw = cellWidth(g.cp, col);
+        const cw = text.cellWidth(g.cp, col);
         if (cw == 0) {
             // Combining mark: attaches to the previous character if it's shown.
             if (drew_prev) {
@@ -237,7 +253,7 @@ fn drawChars(w: ?*std.Io.Writer, chars: anytype, left: usize, max_cols: usize) !
             } else if (g.cp < 0x20 or g.cp == 0x7f) {
                 // Control characters would act on the terminal; show them as ^X.
                 try out.writeAll(&.{ '^', @as(u8, @intCast(g.cp)) ^ 0x40 });
-            } else if (isUnprintable(g.cp)) {
+            } else if (text.isUnprintable(g.cp)) {
                 try out.writeAll("\u{FFFD}");
             } else {
                 try out.writeAll(g.raw());
@@ -369,12 +385,35 @@ test "file text, clipped and scrolled" {
         "third",
         " a.txt      32x4  Ln 1/3  Col 1",
     });
-    try expectScreen(4, 32, .{ .buffer = &b, .name = "a.txt", .top = 2 }, .{
+    try expectScreen(4, 32, .{ .buffer = &b, .name = "a.txt", .top = 2, .cursor = .{ .line = 2 } }, .{
         "third",
         "~",
         "~",
         " a.txt      32x4  Ln 3/3  Col 1",
     });
+}
+
+test "cursor is placed at its screen position, hidden when off screen" {
+    var b: Buffer = try .init(testing.allocator, "abc\ndef\nghi\n");
+    defer b.deinit();
+    var buf: [4096]u8 = undefined;
+
+    var w: std.Io.Writer = .fixed(&buf);
+    try draw(&w, .{ .rows = 3, .cols = 10 }, .{ .buffer = &b, .name = "", .top = 1, .left = 1, .cursor = .{ .line = 2, .col = 2 }, .cursor_shape = .bar });
+    try testing.expect(std.mem.endsWith(u8, w.buffered(), "\x1b[2;2H\x1b[6 q" ++ show_cursor ++ sync_end));
+
+    w = .fixed(&buf);
+    try draw(&w, .{ .rows = 3, .cols = 10 }, .{ .buffer = &b, .name = "", .top = 1, .cursor = .{ .line = 0, .col = 0 } });
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), show_cursor) == null);
+}
+
+test "status bar shows the cursor position, unsaved changes and the mode" {
+    var b: Buffer = try .init(testing.allocator, "abc\ndef\n");
+    defer b.deinit();
+    const view: View = .{ .buffer = &b, .name = "f", .top = 0, .cursor = .{ .line = 1, .col = 2 }, .modified = true, .mode = "-- INSERT --" };
+    try expectScreen(3, 42, view, .{ "abc", "def", " f [+]  -- INSERT --  42x3  Ln 2/2  Col 3" });
+    // Narrower: the size goes before the name and mode do.
+    try expectScreen(3, 40, view, .{ "abc", "def", " f [+]  -- INSERT --      Ln 2/2  Col 3" });
 }
 
 test "a line that exactly fills the row keeps its last character" {
@@ -392,7 +431,7 @@ test "status bar fills the row exactly and drops what doesn't fit" {
     });
     try expectScreen(2, 22, .{ .buffer = &b, .name = "name.txt", .top = 0 }, .{
         "x",
-        "  22x2  Ln 1/1  Col 1",
+        " name.txt      Ln 1/1",
     });
     try expectScreen(2, 12, .{ .buffer = &b, .name = "name.txt", .top = 0 }, .{
         "x",
@@ -430,11 +469,9 @@ test "scrolling sideways" {
         "rt",
         "Ln 1/4",
     });
-    try testing.expectEqual(@as(usize, 4), maxLeft(.{ .rows = 5, .cols = 6 }, .{ .buffer = &b, .name = "", .top = 0 }));
-    try testing.expectEqual(@as(usize, 3), maxLeft(.{ .rows = 5, .cols = 6 }, .{ .buffer = &b, .name = "", .top = 1 }));
 }
 
-test "lines longer than any copy buffer scroll to their end" {
+test "lines longer than any copy buffer show their end" {
     const gpa = testing.allocator;
     const long = try gpa.alloc(u8, 10_000);
     defer gpa.free(long);
@@ -442,10 +479,7 @@ test "lines longer than any copy buffer scroll to their end" {
     @memcpy(long[long.len - 3 ..], "END");
     var b: Buffer = try .init(gpa, long);
     defer b.deinit();
-    const size: Size = .{ .rows = 2, .cols = 10 };
-    const left = maxLeft(size, .{ .buffer = &b, .name = "", .top = 0 });
-    try testing.expectEqual(@as(usize, 9_990), left);
-    try expectScreen(2, 10, .{ .buffer = &b, .name = "", .top = 0, .left = left }, .{ "aaaaaaaEND", "   Ln 1/1" });
+    try expectScreen(2, 10, .{ .buffer = &b, .name = "", .top = 0, .left = 9_990 }, .{ "aaaaaaaEND", "   Ln 1/1" });
 }
 
 test "a character split across two pieces is read whole" {

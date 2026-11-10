@@ -2,18 +2,21 @@ const std = @import("std");
 const Terminal = @import("term.zig").Terminal;
 const ui = @import("ui.zig");
 const file = @import("file.zig");
+const Editor = @import("Editor.zig");
+const Decoder = @import("keys.zig").Decoder;
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len > 2) fatal("usage: zvim [file]", .{});
     const path: []const u8 = if (args.len == 2) args[1] else "";
 
-    var buffer = if (path.len > 0)
+    const buffer = if (path.len > 0)
         file.load(init.gpa, init.io, .cwd(), path) catch |err|
             fatal("cannot open {s}: {s}", .{ path, @errorName(err) })
     else
         try @import("Buffer.zig").init(init.gpa, "");
-    defer buffer.deinit();
+    var editor: Editor = .init(init.gpa, buffer);
+    defer editor.deinit();
 
     var term = try Terminal.init();
     defer term.deinit();
@@ -23,25 +26,27 @@ pub fn main(init: std.process.Init) !void {
     const out = &out_file.interface;
 
     var size = Terminal.size();
-    var top: usize = 0;
-    var left: usize = 0;
     var in_buf: [256]u8 = undefined;
     while (true) {
-        const view: ui.View = .{ .buffer = &buffer, .name = path, .top = top, .left = left };
-        try ui.draw(out, size, view);
+        try editor.scrollToCursor(ui.textRows(size), size.cols);
+        const pos = try editor.cursorPos();
+        try ui.draw(out, size, .{
+            .buffer = &editor.buffer,
+            .name = path,
+            .top = editor.top,
+            .left = editor.left,
+            .cursor = .{ .line = pos.line, .col = pos.col },
+        });
         try out.flush();
 
         switch (try term.next(&in_buf)) {
             .resize => size = Terminal.size(),
-            .input => |bytes| for (bytes) |key| switch (key) {
-                'q' => return,
-                'j' => top = @min(top + 1, buffer.visibleLineCount() - 1),
-                'k' => top -|= 1,
-                'h' => left -|= 1,
-                'l' => if (left < ui.maxLeft(size, .{ .buffer = &buffer, .name = path, .top = top })) {
-                    left += 1;
-                },
-                else => {},
+            .input => |bytes| {
+                var keys: Decoder = .{ .bytes = bytes };
+                while (keys.next()) |key| {
+                    if (key == .char and key.char == 'q') return;
+                    try editor.handleKey(key);
+                }
             },
         }
     }
@@ -59,4 +64,5 @@ test {
     _ = @import("text.zig");
     _ = @import("file.zig");
     _ = @import("keys.zig");
+    _ = @import("Editor.zig");
 }

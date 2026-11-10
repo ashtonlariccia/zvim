@@ -43,6 +43,23 @@ pub fn width(cp: u21) u2 {
     return 1;
 }
 
+pub const tab_width = 8;
+
+/// Columns `cp` takes on screen when it starts at display column `col`:
+/// tabs reach the next tab stop, control characters show as ^X, and
+/// unprintable characters as U+FFFD.
+pub fn cellWidth(cp: u21, col: usize) usize {
+    if (cp == '\t') return tab_width - col % tab_width;
+    if (cp < 0x20 or cp == 0x7f) return 2;
+    if (isUnprintable(cp)) return 1;
+    return width(cp);
+}
+
+/// Invalid bytes and C1 control characters, which are shown as U+FFFD.
+pub fn isUnprintable(cp: u21) bool {
+    return cp == replacement or (cp >= 0x80 and cp < 0xa0);
+}
+
 fn inRanges(ranges: []const [2]u21, cp: u21) bool {
     var lo: usize = 0;
     var hi: usize = ranges.len;
