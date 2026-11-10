@@ -1,6 +1,6 @@
 //! zvim's own commands, typed after `\` (a key Vim leaves unused, so `:`
 //! stays Vim's), and the settings file of the same commands read at startup.
-//! For now there is one, `set`:
+//! `help` shows the help page (help.zig); `set` changes settings:
 //!
 //!     \set expandtab shiftwidth=4    turn on, give a value
 //!     \set noexpandtab               turn off
@@ -64,7 +64,11 @@ pub fn runLine(ed: *Editor, line: []const u8) bool {
     var words = std.mem.tokenizeAny(u8, line, " \t");
     const command = words.next() orelse return true;
     if (std.mem.eql(u8, command, "set") or std.mem.eql(u8, command, "se")) return set(ed, words.rest());
-    ed.setMessage(true, "Not a zvim command: {s}", .{std.mem.trim(u8, line, " \t")});
+    if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "h")) {
+        ed.help = 0;
+        return true;
+    }
+    ed.setMessage(true, "Not a zvim command: {s} (try \\help)", .{std.mem.trim(u8, line, " \t")});
     return false;
 }
 
@@ -198,7 +202,7 @@ test "\\set rejects what it doesn't understand; :set is not a command" {
     try testing.expectEqualStrings("E492: Not an editor command: set et", e.message.text());
     try testing.expect(!e.settings.expandtab);
     try run(&e, "wibble");
-    try testing.expectEqualStrings("Not a zvim command: wibble", e.message.text());
+    try testing.expectEqualStrings("Not a zvim command: wibble (try \\help)", e.message.text());
     try run(&e, "set wibble");
     try testing.expectEqualStrings("E518: Unknown option: wibble", e.message.text());
     try run(&e, "set ts=0");
@@ -231,7 +235,7 @@ test "a settings file: set lines, comments, and the first bad line reported" {
     try testing.expectEqual(@as(usize, 4), e.settings.shiftwidth);
 
     load(&e, "w out.txt\n");
-    try testing.expectEqualStrings("zvimrc line 1: Not a zvim command: w out.txt", e.message.text());
+    try testing.expectEqualStrings("zvimrc line 1: Not a zvim command: w out.txt (try \\help)", e.message.text());
 }
 
 test "expandtab: Tab and > insert spaces to the next stop, < removes them" {

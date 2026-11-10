@@ -6,6 +6,7 @@ const Editor = @import("Editor.zig");
 const Decoder = @import("keys.zig").Decoder;
 const crash = @import("crash.zig");
 const settings = @import("editor/settings.zig");
+const help = @import("editor/help.zig");
 const build_options = @import("build_options");
 
 /// On a crash, save unsaved changes and restore the terminal first.
@@ -23,7 +24,7 @@ pub fn main(init: std.process.Init) !void {
         if (help_flag or version_flag) {
             var buf: [1024]u8 = undefined;
             var stdout: std.Io.File.Writer = .initStreaming(.stdout(), init.io, &buf);
-            if (help_flag) try stdout.interface.writeAll(help) else try stdout.interface.print("zvim {s}\n", .{build_options.version});
+            if (help_flag) try stdout.interface.writeAll(usage) else try stdout.interface.print("zvim {s}\n", .{build_options.version});
             try stdout.interface.flush();
             return;
         }
@@ -129,6 +130,8 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
     crash.install(editor, &term);
     defer crash.uninstall();
     var disk = DiskStamp.of(init.io, editor.name.items);
+    var help_buffer: @import("Buffer.zig") = try .init(init.gpa, help.text);
+    defer help_buffer.deinit();
 
     var out_buf: [16 * 1024]u8 = undefined;
     var out_file: std.Io.File.Writer = .initStreaming(.stdout(), init.io, &out_buf);
@@ -146,42 +149,52 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
             try copyToClipboard(init.gpa, out, editor.clipboard.items);
         }
         try editor.scrollToCursor(ui.textRows(size), size.cols);
-        const pos = try editor.cursorPos();
-        const selection: ?ui.Selection = if (try editor.selection()) |sel| .{
-            .kind = switch (sel.kind) {
-                .char => .char,
-                .line => .line,
-                .block => .block,
-            },
-            .first_line = sel.first_line,
-            .last_line = sel.last_line,
-            .start_col = sel.start_col,
-            .end_col = sel.end_col,
-        } else null;
-        try ui.draw(out, size, .{
-            .buffer = &editor.buffer,
-            .name = editor.name.items,
-            .top = editor.top,
-            .left = editor.left,
-            .cursor = .{ .line = pos.line, .col = pos.col },
-            .cursor_shape = if (editor.mode == .insert) .bar else .block,
-            .mode = modeLabel(editor),
-            .modified = editor.isModified(),
-            .crlf = editor.crlf,
-            .readonly = editor.readonly,
-            .command = if (editor.mode == .command) editor.command.items else null,
-            .command_prefix = switch (editor.command_kind) {
-                .ex => ':',
-                .zvim => '\\',
-                .search_forward => '/',
-                .search_backward => '?',
-            },
-            .selection = selection,
-            .message = if (editor.message.len > 0)
-                .{ .text = editor.message.text(), .is_error = editor.message.is_error }
-            else
-                null,
-        });
+        if (editor.help) |top| {
+            try ui.draw(out, size, .{
+                .buffer = &help_buffer,
+                .name = help.name,
+                .top = top,
+                .cursor = .{ .line = top, .col = 0 },
+                .message = .{ .text = help.hint, .is_error = false },
+            });
+        } else {
+            const pos = try editor.cursorPos();
+            const selection: ?ui.Selection = if (try editor.selection()) |sel| .{
+                .kind = switch (sel.kind) {
+                    .char => .char,
+                    .line => .line,
+                    .block => .block,
+                },
+                .first_line = sel.first_line,
+                .last_line = sel.last_line,
+                .start_col = sel.start_col,
+                .end_col = sel.end_col,
+            } else null;
+            try ui.draw(out, size, .{
+                .buffer = &editor.buffer,
+                .name = editor.name.items,
+                .top = editor.top,
+                .left = editor.left,
+                .cursor = .{ .line = pos.line, .col = pos.col },
+                .cursor_shape = if (editor.mode == .insert) .bar else .block,
+                .mode = modeLabel(editor),
+                .modified = editor.isModified(),
+                .crlf = editor.crlf,
+                .readonly = editor.readonly,
+                .command = if (editor.mode == .command) editor.command.items else null,
+                .command_prefix = switch (editor.command_kind) {
+                    .ex => ':',
+                    .zvim => '\\',
+                    .search_forward => '/',
+                    .search_backward => '?',
+                },
+                .selection = selection,
+                .message = if (editor.message.len > 0)
+                    .{ .text = editor.message.text(), .is_error = editor.message.is_error }
+                else
+                    null,
+            });
+        }
         try out.flush();
 
         const event = try term.next(in_buf[pending..], if (pending > 0) key_wait_ms else null);
@@ -251,7 +264,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
     }
 }
 
-const help =
+const usage =
     \\usage: zvim [-c] [+line] [file]
     \\
     \\A small Vim-like editor. Opens `file` (created on the first :w if it
@@ -264,6 +277,8 @@ const help =
     \\
     \\In the editor: i to type, Esc to stop, :w to save, :q to quit,
     \\:q! to quit without saving. Keys work like Vim's.
+    \\
+    \\In the editor, \help lists the keys.
     \\
     \\Settings: type \set in the editor to see them, \set expandtab
     \\shiftwidth=4 to change them. To keep them, put the same lines ("set

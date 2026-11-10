@@ -24,6 +24,7 @@ const operators = @import("editor/operators.zig");
 const visual = @import("editor/visual.zig");
 const insert = @import("editor/insert.zig");
 const Settings = @import("editor/settings.zig").Settings;
+const help_page = @import("editor/help.zig");
 const prevChar = text.prevChar;
 const displayCol = text.displayCol;
 
@@ -85,6 +86,8 @@ crlf: bool = false,
 /// mode or pressing Enter again removes that indentation.
 autoindent_at: ?usize = null,
 settings: Settings = .{},
+/// The first line shown of the help page, while it's open (see help.zig).
+help: ?usize = null,
 /// Ctrl-Z was pressed; `handleKey` returns `.suspend`.
 suspend_requested: bool = false,
 /// The last key's command couldn't run (a motion with nowhere to go, or a
@@ -322,6 +325,11 @@ pub fn cellWidthAt(self: *Editor, offset: usize) !usize {
 pub fn handleKey(self: *Editor, key: Key) Allocator.Error!Action {
     self.message.len = 0;
     self.failed = false;
+
+    if (self.help != null) {
+        if (key != .paste) help_page.key(self, key);
+        return .none;
+    }
 
     if (!self.dot.replaying) {
         if (self.mode == .normal and self.pending.isEmpty()) {
@@ -607,6 +615,7 @@ test {
     _ = insert;
     _ = @import("editor/textobjects.zig");
     _ = @import("editor/settings.zig");
+    _ = @import("editor/help.zig");
     _ = h;
 }
 
