@@ -77,7 +77,7 @@ pub fn saveRecovery(ed: *Editor, buf: *PathBuffer) ?[]const u8 {
 /// hold anything the user was editing).
 fn writeFile(path: [:0]const u8, buffer: *const Buffer) bool {
     const flags: posix.O = .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true };
-    const rc = sys.open(path.ptr, flags, 0o600);
+    const rc = sys.open(path.ptr, flags, @as(posix.mode_t, 0o600));
     if (posix.errno(rc) != .SUCCESS) return false;
     const fd: posix.fd_t = @intCast(rc);
     defer _ = sys.close(fd);
