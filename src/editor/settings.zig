@@ -39,9 +39,8 @@ pub const Settings = struct {
     syntax: bool = true,
     /// Set by `color` lines, not `set`.
     colors: syntax_.Colors = syntax_.default_colors,
-    /// The cursor line's background, set by `color cursorline`; null for
-    /// a shade of the terminal's own background.
-    cursorline_color: ?syntax_.Color = null,
+    /// The cursor line's background; set by `color cursorline`.
+    cursorline_color: syntax_.Color = .{ .rgb = .{ 0x2a, 0x2b, 0x3c } },
 };
 
 pub const max_width = 32;

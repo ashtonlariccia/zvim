@@ -64,20 +64,6 @@ pub const View = struct {
     cursorline: ?syntax.Color = null,
 };
 
-/// The cursor line's background on a terminal with background `bg`: a
-/// little toward white, or toward black if `bg` is light.
-pub fn shadeOf(bg: [3]u8) syntax.Color {
-    const luma = (@as(u32, bg[0]) * 299 + @as(u32, bg[1]) * 587 + @as(u32, bg[2]) * 114) / 1000;
-    var out: [3]u8 = undefined;
-    for (bg, &out) |c, *o| {
-        const w: u32 = c;
-        o.* = @intCast(if (luma < 128) w + (255 - w) * shade_percent / 100 else w - w * shade_percent / 100);
-    }
-    return .{ .rgb = out };
-}
-
-const shade_percent = 5;
-
 pub const Numbers = enum {
     none,
     /// Each line's own number.
@@ -858,12 +844,6 @@ test "the cursor line is shaded to the edge, except where selected" {
     selected.selection = .{ .kind = .char, .first_line = 1, .last_line = 1, .start_col = 1, .end_col = 2 };
     try draw(&w, .{ .rows = 3, .cols = 10 }, selected);
     try testing.expect(std.mem.indexOf(u8, w.buffered(), shade ++ "c" ++ reset ++ reverse ++ "d" ++ reset ++ shade ++ "\x1b[K") != null);
-}
-
-test "the cursor line shade is a touch off the background, either way" {
-    try testing.expectEqual(syntax.Color{ .rgb = .{ 12, 12, 12 } }, shadeOf(.{ 0, 0, 0 }));
-    try testing.expectEqual(syntax.Color{ .rgb = .{ 0x29, 0x29, 0x38 } }, shadeOf(.{ 0x1e, 0x1e, 0x2e }));
-    try testing.expectEqual(syntax.Color{ .rgb = .{ 243, 243, 243 } }, shadeOf(.{ 255, 255, 255 }));
 }
 
 test "the gutter grows with the line count" {

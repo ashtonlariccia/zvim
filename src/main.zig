@@ -206,8 +206,6 @@ fn run(init: std.process.Init, editor: *Editor, highlighter: ?*syntax.Highlighte
     var in_paste = false;
     // When the message in the bottom row gives way to the status bar again.
     var message_until = messageDeadline(init.io, editor);
-    // The terminal's background colour, once it answers the query.
-    var background: ?[3]u8 = null;
     while (true) {
         if (editor.clipboard_pending) {
             editor.clipboard_pending = false;
@@ -251,14 +249,7 @@ fn run(init: std.process.Init, editor: *Editor, highlighter: ?*syntax.Highlighte
             .numbers = numbers,
             .highlighter = highlighter,
             .colors = editor.settings.colors,
-            .cursorline = if (!editor.settings.cursorline)
-                null
-            else if (editor.settings.cursorline_color) |color|
-                color
-            else if (background) |bg|
-                ui.shadeOf(bg)
-            else
-                null,
+            .cursorline = if (editor.settings.cursorline) editor.settings.cursorline_color else null,
             .message = if (editor.message.len > 0)
                 .{ .text = editor.message.text(), .is_error = editor.message.is_error }
             else
@@ -291,10 +282,6 @@ fn run(init: std.process.Init, editor: *Editor, highlighter: ?*syntax.Highlighte
             while (keys.next()) |key| {
                 if (build_options.test_crash and key == .ctrl and key.ctrl == 0x7c) {
                     @panic("test crash (Ctrl-\\ in a -Dtest-crash build)");
-                }
-                if (key == .background) {
-                    background = key.background;
-                    continue;
                 }
                 switch (try editor.handleKey(key)) {
                     .none => {},
@@ -403,10 +390,8 @@ fn writeUsage(w: *std.Io.Writer) !void {
     try settings.writeColors(w, "    {s: <9} {f}\n");
     try w.writeAll(
         \\  zvimrc changes them: color keyword type #e5c07b (a name, #rrggbb,
-        \\  or none). set nosyntax turns colouring off. The cursor line is
-        \\  shaded a touch lighter than the terminal's background (darker on a
-        \\  light one), if the terminal says what that is; color cursorline
-        \\  sets a colour of your own.
+        \\  or none). set nosyntax turns colouring off. The cursor line's shade
+        \\  is #2a2b3c; color cursorline changes it.
         \\
         \\WHAT ZVIM DOES BY ITSELF
         \\  Clipboard     every yank also goes to the system clipboard, where the

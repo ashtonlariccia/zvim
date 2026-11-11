@@ -22,14 +22,7 @@ pub const Key = union(enum) {
     /// Text pasted into the terminal (bracketed paste), to insert literally.
     /// Points into the input buffer.
     paste: []const u8,
-    /// Not a key: the terminal's reply to `background_query`, its
-    /// background colour.
-    background: [3]u8,
 };
-
-/// Asks the terminal for its background colour (OSC 11). Terminals that
-/// know it reply ESC ] 11 ; rgb:RRRR/GGGG/BBBB, ended by ESC \\ or BEL.
-pub const background_query = "\x1b]11;?\x1b\\";
 
 const paste_begin = "\x1b[200~";
 const paste_end = "\x1b[201~";
@@ -83,12 +76,6 @@ pub const Decoder = struct {
             const b = rest[0];
             switch (b) {
                 0x1b => {
-                    if (rest.len >= 2 and rest[1] == ']') {
-                        // A terminal's reply (OSC); never typed.
-                        const len = oscLen(rest);
-                        d.i += len;
-                        return oscKey(rest[0..len]) orelse continue;
-                    }
                     if (isSequenceStart(rest)) {
                         const seq = sequenceLen(rest);
                         d.i += seq;
@@ -127,12 +114,10 @@ pub const Decoder = struct {
 
     /// Whether `s` is the beginning of a key whose remaining bytes may still
     /// be on their way: a lone ESC, ESC [ without its final byte, ESC O
-    /// without its key, an OSC reply without its end, or a UTF-8 character
-    /// missing continuation bytes.
+    /// without its key, or a UTF-8 character missing continuation bytes.
     fn incomplete(s: []const u8) bool {
         if (s[0] == 0x1b) {
             if (s.len == 1) return true;
-            if (s[1] == ']') return oscLen(s) == s.len and !oscEnded(s);
             if (s[1] == '[') {
                 for (s[2..]) |c| if (c >= 0x40 and c <= 0x7e) return false;
                 return true;
@@ -170,42 +155,6 @@ pub const Decoder = struct {
         // CSI: parameter and intermediate bytes, then one final byte.
         while (j < s.len and (s[j] < 0x40 or s[j] > 0x7e)) j += 1;
         return @min(j + 1, s.len);
-    }
-
-    /// Length of the OSC string at the start of `s`, with its end (BEL or
-    /// ESC \\); all of `s` if it doesn't end.
-    fn oscLen(s: []const u8) usize {
-        var j: usize = 2;
-        while (j < s.len) : (j += 1) {
-            if (s[j] == 0x07) return j + 1;
-            // ESC \\ ends it; an ESC that starts something else isn't part of it.
-            if (s[j] == 0x1b) return if (j + 1 == s.len) j + 1 else if (s[j + 1] == '\\') j + 2 else j;
-        }
-        return s.len;
-    }
-
-    fn oscEnded(s: []const u8) bool {
-        return s[s.len - 1] == 0x07 or std.mem.endsWith(u8, s, "\x1b\\");
-    }
-
-    /// The background colour from an OSC 11 reply; each channel is 1 to 4
-    /// hex digits, of which the first two are kept.
-    fn oscKey(osc: []const u8) ?Key {
-        const prefix = "\x1b]11;rgb:";
-        if (!std.mem.startsWith(u8, osc, prefix)) return null;
-        const end = std.mem.indexOfAnyPos(u8, osc, prefix.len, "\x07\x1b") orelse return null;
-        var channels = std.mem.splitScalar(u8, osc[prefix.len..end], '/');
-        var rgb: [3]u8 = undefined;
-        for (&rgb) |*c| {
-            const hex = channels.next() orelse return null;
-            if (hex.len < 1 or hex.len > 4) return null;
-            const v = std.fmt.parseInt(u16, hex, 16) catch return null;
-            // Scale to 8 bits: "f" and "ffff" both mean full.
-            const max: u32 = (@as(u32, 1) << @intCast(4 * hex.len)) - 1;
-            c.* = @intCast(@as(u32, v) * 255 / max);
-        }
-        if (channels.next() != null) return null;
-        return .{ .background = rgb };
     }
 
     fn sequenceKey(seq: []const u8) ?Key {
@@ -266,19 +215,6 @@ test "lone escape versus escape sequences" {
 
 test "unknown sequences and invalid bytes are dropped" {
     try expectKeys("\x1b[1;5Pa\xffb", &.{ .{ .char = 'a' }, .{ .char = 'b' } });
-}
-
-test "the terminal's background colour reply, ended either way, and other OSC replies dropped" {
-    try expectKeys("\x1b]11;rgb:1e1e/2e2e/ffff\x1b\\x", &.{ .{ .background = .{ 0x1e, 0x2e, 0xff } }, .{ .char = 'x' } });
-    try expectKeys("\x1b]11;rgb:1e/2e/3e\x07", &.{.{ .background = .{ 0x1e, 0x2e, 0x3e } }});
-    try expectKeys("\x1b]10;rgb:0/0/0\x07y", &.{.{ .char = 'y' }});
-    try expectKeys("\x1b]11;rgb:zz/0/0\x07", &.{});
-}
-
-test "an OSC reply split across reads waits for its end" {
-    var d: Decoder = .{ .bytes = "\x1b]11;rgb:1e1e/", .final = false };
-    try testing.expectEqual(@as(?Key, null), d.next());
-    try testing.expectEqualStrings("\x1b]11;rgb:1e1e/", d.leftover());
 }
 
 test "bracketed paste comes through as literal text" {
