@@ -203,33 +203,6 @@ fn setOne(ed: *Editor, arg: []const u8) bool {
     return true;
 }
 
-/// A settings file listing every setting at its default, explained: what
-/// zvim -s starts from when there's no file yet.
-pub fn template(w: *std.Io.Writer) !void {
-    try w.writeAll(
-        \\" zvim settings, read when zvim starts. These are the defaults.
-        \\" "set name" turns a setting on, "set noname" turns it off,
-        \\" "set name=4" gives it a number. " starts a comment.
-        \\
-    );
-    var defaults: Settings = .{};
-    for (std.enums.values(Option), Option.about) |option, about| {
-        try w.print("\n\" {s}\n", .{about});
-        switch (valueOf(&defaults, option)) {
-            .flag => |flag| try w.print("set {s}{s}\n", .{ if (flag.*) "" else "no", @tagName(option) }),
-            .number => |number| try w.print("set {s}={d}\n", .{ @tagName(option), number.* }),
-        }
-    }
-    try w.writeAll(
-        \\
-        \\" Colours for syntax highlighting, by group: "color group... colour".
-        \\" A colour is a name (red, brightblue, grey...), #rrggbb, or none.
-        \\" What's in each group is up to the language files in syntax/.
-        \\
-    );
-    try writeColors(w, "color {s: <8} {f}\n");
-}
-
 /// Each group with its default colour, in `fmt` (group name, colour).
 pub fn writeColors(w: *std.Io.Writer, comptime fmt: []const u8) !void {
     for (std.enums.values(syntax_.Group)) |group| try w.print(fmt, .{ @tagName(group), syntax_.default_colors.get(group) });
@@ -299,69 +272,6 @@ test "bad values are refused and leave the setting as it was" {
     load(&e, "set nu rnu mt=0");
     try testing.expect(e.settings.number and e.settings.relativenumber);
     try testing.expectEqual(@as(usize, 0), e.settings.messagetime);
-}
-
-test "the settings file zvim -s starts from lists every setting at its default" {
-    var buf: [2048]u8 = undefined;
-    var w: std.Io.Writer = .fixed(&buf);
-    try template(&w);
-    try testing.expectEqualStrings(
-        \\" zvim settings, read when zvim starts. These are the defaults.
-        \\" "set name" turns a setting on, "set noname" turns it off,
-        \\" "set name=4" gives it a number. " starts a comment.
-        \\
-        \\" Searches ignore case...
-        \\set ignorecase
-        \\
-        \\" ...unless the search has a capital letter in it
-        \\set smartcase
-        \\
-        \\" New lines copy the indentation of the line above
-        \\set autoindent
-        \\
-        \\" Tab and > insert spaces instead of a tab
-        \\set noexpandtab
-        \\
-        \\" How wide a tab looks on screen (1 to 32)
-        \\set tabstop=4
-        \\
-        \\" How many spaces expandtab inserts (1 to 32)
-        \\set shiftwidth=4
-        \\
-        \\" Line numbers down the left...
-        \\set nonumber
-        \\
-        \\" ...or each line's distance from the cursor
-        \\set norelativenumber
-        \\
-        \\" How long messages show, in ms (0: until a key)
-        \\set messagetime=1000
-        \\
-        \\" Typed brackets and quotes come in pairs
-        \\set noautoclose
-        \\
-        \\" Colour files by the language files in syntax/
-        \\set syntax
-        \\
-        \\" Colours for syntax highlighting, by group: "color group... colour".
-        \\" A colour is a name (red, brightblue, grey...), #rrggbb, or none.
-        \\" What's in each group is up to the language files in syntax/.
-        \\color comment  brightblack
-        \\color string   green
-        \\color number   red
-        \\color keyword  magenta
-        \\color type     yellow
-        \\color constant red
-        \\color function blue
-        \\color todo     brightyellow
-        \\
-    , w.buffered());
-    // Loading it changes nothing.
-    var e = try testEditor("");
-    defer e.deinit();
-    load(&e, w.buffered());
-    try testing.expectEqual(@as(usize, 0), e.message.len);
-    try testing.expectEqualDeep(Settings{}, e.settings);
 }
 
 test "the settings list for --help" {

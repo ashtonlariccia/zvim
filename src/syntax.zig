@@ -1,6 +1,5 @@
 //! Syntax highlighting, entirely from language files in the config
-//! folder's syntax/ directory; nothing is built in. `zvim -s` installs a few
-//! to start from (see `starters`).
+//! folder's syntax/ directory, written by the user; nothing is built in.
 //!
 //! A language file, one directive per line (a line starting with " is a
 //! comment):
@@ -82,16 +81,6 @@ pub const default_colors: Colors = .init(.{
     .function = .{ .ansi = 4 },
     .todo = .{ .ansi = 11 },
 });
-
-/// The language files `zvim -s` installs.
-pub const starters = [_]struct { name: []const u8, text: []const u8 }{
-    .{ .name = "c", .text = @embedFile("starter/c") },
-    .{ .name = "markdown", .text = @embedFile("starter/markdown") },
-    .{ .name = "python", .text = @embedFile("starter/python") },
-    .{ .name = "rust", .text = @embedFile("starter/rust") },
-    .{ .name = "shell", .text = @embedFile("starter/shell") },
-    .{ .name = "zig", .text = @embedFile("starter/zig") },
-};
 
 const Span = struct {
     group: Group,
@@ -520,14 +509,4 @@ test "the highlighter rescans only from an edit down" {
     h.sync(&b);
     try testing.expectEqual(@as(usize, 2), h.states.items.len);
     try testing.expectEqual(@as(usize, 0), (try h.lineRuns(&b, 2)).len);
-}
-
-test "every starter language file reads without problems" {
-    for (starters) |starter| {
-        var problem: Problem = .{};
-        var lang = try Language.parse(testing.allocator, starter.text, &problem);
-        defer lang.deinit();
-        if (problem.len > 0) std.debug.print("{s} line {d}: {s}\n", .{ starter.name, problem.line, problem.text() });
-        try testing.expectEqual(@as(usize, 0), problem.len);
-    }
 }

@@ -18,7 +18,6 @@ pub fn main(init: std.process.Init) !void {
     // +N opens at line N, + at the last line.
     var start_line: ?usize = null;
     var clean = false;
-    var open_settings = false;
     for (args[1..]) |arg| {
         const help_flag = std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
         const version_flag = std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v");
@@ -31,19 +30,14 @@ pub fn main(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, arg, "--clean") or std.mem.eql(u8, arg, "-c")) {
             clean = true;
-        } else if (std.mem.eql(u8, arg, "--settings") or std.mem.eql(u8, arg, "-s")) {
-            open_settings = true;
         } else if (arg.len > 0 and arg[0] == '+') {
             start_line = if (arg.len == 1) std.math.maxInt(usize) else std.fmt.parseInt(usize, arg[1..], 10) catch
                 fatal("not a line number: {s}", .{arg});
+        } else if (arg.len > 1 and arg[0] == '-') {
+            fatal("unknown option: {s} (a file starting with - opens as ./{s})", .{ arg, arg });
         } else if (path.len == 0) {
             path = arg;
         } else fatal(short_usage, .{});
-    }
-    if (open_settings) {
-        if (path.len > 0) fatal(short_usage, .{});
-        path = settingsPath(init) orelse fatal("no home directory to keep settings in", .{});
-        try createSettingsFile(init, path);
     }
 
     const loaded: file.Loaded = if (path.len > 0)
@@ -135,37 +129,6 @@ fn loadLanguage(init: std.process.Init, editor: *Editor, path: []const u8) !?syn
         editor.setMessage(true, "syntax/{s} line {d}: {s}", .{ r.name, r.problem.line, r.problem.text() });
     };
     return if (found) |lang| .init(init.gpa, lang) else null;
-}
-
-/// For zvim -s: writes a settings file listing every setting at its
-/// default if there's none, and the starter language files if there's no
-/// syntax/ folder. Nothing that's there is overwritten.
-fn createSettingsFile(init: std.process.Init, path: []const u8) !void {
-    const cwd = std.Io.Dir.cwd();
-    const dir = std.fs.path.dirname(path).?;
-    cwd.createDirPath(init.io, dir) catch |err| fatal("cannot create {s}: {s}", .{ dir, @errorName(err) });
-    var out: std.Io.Writer.Allocating = .init(init.arena.allocator());
-    try settings.template(&out.writer);
-    try createFile(init, path, out.written());
-
-    const syntax_dir = try std.fs.path.join(init.arena.allocator(), &.{ dir, "syntax" });
-    cwd.access(init.io, syntax_dir, .{}) catch |err| switch (err) {
-        error.FileNotFound => {
-            cwd.createDirPath(init.io, syntax_dir) catch |e| fatal("cannot create {s}: {s}", .{ syntax_dir, @errorName(e) });
-            for (syntax.starters) |starter| {
-                try createFile(init, try std.fs.path.join(init.arena.allocator(), &.{ syntax_dir, starter.name }), starter.text);
-            }
-        },
-        else => {},
-    };
-}
-
-/// Writes a new file, leaving one that's already there alone.
-fn createFile(init: std.process.Init, path: []const u8, data: []const u8) !void {
-    std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = path, .data = data, .flags = .{ .exclusive = true } }) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => fatal("cannot create {s}: {s}", .{ path, @errorName(err) }),
-    };
 }
 
 /// A settings file larger than this isn't read.
@@ -372,12 +335,11 @@ fn run(init: std.process.Init, editor: *Editor, highlighter: ?*syntax.Highlighte
     }
 }
 
-const short_usage = "usage: zvim [-c] [+line] [file], or zvim -s";
+const short_usage = "usage: zvim [-c] [+line] [file]";
 
 fn writeUsage(w: *std.Io.Writer) !void {
     try w.writeAll(
         \\usage: zvim [-c] [+line] [file]
-        \\       zvim -s
         \\
         \\A small Vim-like editor. Opens `file` (created on the first :w if it
         \\doesn't exist), or an empty buffer. Keys work like Vim's: i to type,
@@ -385,8 +347,6 @@ fn writeUsage(w: *std.Io.Writer) !void {
         \\
         \\  +N              start at line N (+ alone: the last line)
         \\  -c, --clean     ignore the settings file: the defaults below
-        \\  -s, --settings  edit the settings file (made, with every setting
-        \\                  at its default, if there isn't one)
         \\  -h, --help      show this help
         \\  -v, --version   show the version
         \\
@@ -404,13 +364,12 @@ fn writeUsage(w: *std.Io.Writer) !void {
         \\    " a comment
         \\    set expandtab shiftwidth=4
         \\    set noautoindent
-        \\  Without the file zvim uses the defaults. A bad line is skipped and
-        \\  reported when zvim starts.
+        \\  zvim never makes the file: without it, zvim uses the defaults. A
+        \\  bad line is skipped and reported when zvim starts.
         \\
         \\COLOURS AND LANGUAGES
         \\  Files are coloured by language files in ~/.config/zvim/syntax/, one
-        \\  per language. Without them nothing is coloured; zvim -s installs C,
-        \\  Markdown, Python, Rust, shell and Zig when there's no syntax/ folder.
+        \\  per language, written by you. Without them nothing is coloured.
         \\  A language file has one of these per line (" starts a comment line):
         \\    extensions c h              the files it's for
         \\    shebang python3             scripts it's for, by their #! line
