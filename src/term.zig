@@ -22,7 +22,9 @@ pub const Event = union(enum) {
 const stdin = posix.STDIN_FILENO;
 const stdout = posix.STDOUT_FILENO;
 
-const enter_seq = "\x1b[?1049h\x1b[?25l\x1b[?2004h"; // alternate screen, hide cursor, bracketed paste
+// Alternate screen, hide cursor, bracketed paste, and ask for the background
+// colour (the reply comes in as input).
+const enter_seq = "\x1b[?1049h\x1b[?25l\x1b[?2004h" ++ @import("keys.zig").background_query;
 const leave_seq = "\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1049l"; // no bracketed paste, default cursor shape, show cursor, main screen
 
 /// Self-pipe: signal handlers write a byte here so poll() wakes up. 'w' for
