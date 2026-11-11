@@ -61,10 +61,20 @@ pub const Color = union(enum) {
 
     /// The escape sequence that sets this as the text colour.
     pub fn sgr(c: Color, buf: *[24]u8) []const u8 {
+        return c.sgrAt(buf, 0);
+    }
+
+    /// The escape sequence that sets this as the background colour.
+    pub fn bgSgr(c: Color, buf: *[24]u8) []const u8 {
+        return c.sgrAt(buf, 10);
+    }
+
+    /// Background codes are the text colour codes plus 10.
+    fn sgrAt(c: Color, buf: *[24]u8, plus: u8) []const u8 {
         return switch (c) {
             .none => "",
-            .ansi => |n| std.fmt.bufPrint(buf, "\x1b[{d}m", .{if (n < 8) 30 + @as(u8, n) else 90 + @as(u8, n) - 8}) catch unreachable,
-            .rgb => |rgb| std.fmt.bufPrint(buf, "\x1b[38;2;{d};{d};{d}m", .{ rgb[0], rgb[1], rgb[2] }) catch unreachable,
+            .ansi => |n| std.fmt.bufPrint(buf, "\x1b[{d}m", .{plus + if (n < 8) 30 + @as(u8, n) else 90 + @as(u8, n) - 8}) catch unreachable,
+            .rgb => |rgb| std.fmt.bufPrint(buf, "\x1b[{d};2;{d};{d};{d}m", .{ 38 + plus, rgb[0], rgb[1], rgb[2] }) catch unreachable,
         };
     }
 };

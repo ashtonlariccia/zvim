@@ -249,6 +249,7 @@ fn run(init: std.process.Init, editor: *Editor, highlighter: ?*syntax.Highlighte
             .numbers = numbers,
             .highlighter = highlighter,
             .colors = editor.settings.colors,
+            .cursorline = if (editor.settings.cursorline) editor.settings.cursorline_color else null,
             .message = if (editor.message.len > 0)
                 .{ .text = editor.message.text(), .is_error = editor.message.is_error }
             else
@@ -389,7 +390,8 @@ fn writeUsage(w: *std.Io.Writer) !void {
     try settings.writeColors(w, "    {s: <9} {f}\n");
     try w.writeAll(
         \\  zvimrc changes them: color keyword type #e5c07b (a name, #rrggbb,
-        \\  or none). set nosyntax turns colouring off.
+        \\  or none). set nosyntax turns colouring off. The cursor line's shade
+        \\  is #303030; color cursorline changes it.
         \\
         \\WHAT ZVIM DOES BY ITSELF
         \\  Clipboard     every yank also goes to the system clipboard, where the

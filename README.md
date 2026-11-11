@@ -14,7 +14,7 @@ To install, copy one binary somewhere on your PATH; there's nothing else.
 and macOS (x86_64, aarch64) into `zig-out/dist/`, with a `SHA256SUMS` file
 (`sha256sum -c SHA256SUMS`), e.g.
 
-    cp zig-out/dist/zvim-0.1.0-x86_64-linux ~/.bin/zvim
+    cp zig-out/dist/zvim-0.2.0-x86_64-linux ~/.bin/zvim
 
 ## Settings
 
@@ -32,6 +32,7 @@ lists every setting.
     set shiftwidth=4           " ...or this many spaces, with expandtab
     set nonumber               " line numbers down the left...
     set norelativenumber       " ...or distances from the cursor's line
+    set cursorline             " shade the cursor's line
     set messagetime=1000       " ms a message shows before the status bar returns
     set noautoclose            " typed brackets and quotes come in pairs
 
@@ -58,6 +59,9 @@ todo. Their colours are set in zvimrc, several groups at once if you like:
 
     color keyword type #e5c07b
     color comment grey
+
+`color cursorline` sets the shade behind the cursor's line (`#303030` by
+default; `none` or `set nocursorline` turns it off).
 
 `zvim --help` describes every directive.
 

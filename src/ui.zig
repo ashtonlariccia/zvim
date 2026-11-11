@@ -60,6 +60,8 @@ pub const View = struct {
     /// Colours the text, if set.
     highlighter: ?*syntax.Highlighter = null,
     colors: syntax.Colors = syntax.default_colors,
+    /// The cursor line's background, if it's shaded.
+    cursorline: ?syntax.Color = null,
 };
 
 pub const Numbers = enum {
@@ -161,11 +163,20 @@ pub fn draw(w: *std.Io.Writer, size: Size, view: View) !void {
             }
             var chars = lineChars(view.buffer, line);
             const hl: Highlight = if (view.selection) |sel| sel.highlight(line) else .{};
-            const paint: Paint = if (view.highlighter) |h|
+            var paint: Paint = if (view.highlighter) |h|
                 .{ .runs = try h.lineRuns(view.buffer, line), .colors = &view.colors }
             else
                 .{};
+            const shade: syntax.Color = if (line == view.cursor.line) view.cursorline orelse .none else .none;
+            paint.background = shade;
             used = gutter + try drawCharsHighlighted(w, &chars, view.left, cols - gutter, hl, gutter, paint);
+            if (shade != .none and used < cols) {
+                // Clearing to the end of the row fills it with the background.
+                var buf: [24]u8 = undefined;
+                try w.writeAll(shade.bgSgr(&buf));
+                try w.writeAll("\x1b[K" ++ reset);
+                used = cols;
+            }
         } else if (cols > 0) {
             try w.writeAll("~");
             used = 1;
@@ -345,6 +356,8 @@ fn drawChars(w: ?*std.Io.Writer, chars: anytype, left: usize, max_cols: usize) !
 const Paint = struct {
     runs: []const syntax.Run = &.{},
     colors: *const syntax.Colors = &syntax.default_colors,
+    /// Behind all of the line but selected text.
+    background: syntax.Color = .none,
     /// The run at or after the byte being drawn.
     next: usize = 0,
 
@@ -353,15 +366,21 @@ const Paint = struct {
         if (p.next < p.runs.len and p.runs[p.next].start <= byte) return p.colors.get(p.runs[p.next].group);
         return .none;
     }
+
+    fn style(p: *Paint, reversed: bool, byte: usize) Style {
+        return .{ .reverse = reversed, .color = p.colorAt(byte), .background = if (reversed) .none else p.background };
+    }
 };
 
 /// How the next characters look.
 const Style = struct {
     reverse: bool = false,
     color: syntax.Color = .none,
+    /// Ignored with `reverse`, which swaps it into the text colour.
+    background: syntax.Color = .none,
 
     fn eql(a: Style, b: Style) bool {
-        return a.reverse == b.reverse and std.meta.eql(a.color, b.color);
+        return a.reverse == b.reverse and std.meta.eql(a.color, b.color) and std.meta.eql(a.background, b.background);
     }
 };
 
@@ -371,6 +390,7 @@ fn setStyle(out: *std.Io.Writer, current: *Style, want: Style) !void {
     if (want.reverse) try out.writeAll(reverse);
     var buf: [24]u8 = undefined;
     try out.writeAll(want.color.sgr(&buf));
+    if (!want.reverse) try out.writeAll(want.background.bgSgr(&buf));
     current.* = want;
 }
 
@@ -415,7 +435,7 @@ fn drawCharsHighlighted(w: ?*std.Io.Writer, chars: anytype, left: usize, max_col
             const vis_start = @max(start, left);
             const vis_end = @min(end, right);
             if (w) |out| {
-                try setStyle(out, &style, .{ .reverse = hl.covers(start), .color = paint.colorAt(at) });
+                try setStyle(out, &style, paint.style(hl.covers(start), at));
                 if (resync) try out.print("\x1b[{d}G", .{origin + vis_start - left + 1});
                 try out.splatByteAll(' ', vis_end - vis_start);
             }
@@ -425,7 +445,7 @@ fn drawCharsHighlighted(w: ?*std.Io.Writer, chars: anytype, left: usize, max_col
         }
 
         if (w) |out| {
-            try setStyle(out, &style, .{ .reverse = hl.covers(start), .color = paint.colorAt(at) });
+            try setStyle(out, &style, paint.style(hl.covers(start), at));
             if (resync) try out.print("\x1b[{d}G", .{origin + start - left + 1});
             if (g.cp == '\t') {
                 try out.splatByteAll(' ', cw);
@@ -806,6 +826,24 @@ test "syntax colours and a selection over them" {
     const sel: Selection = .{ .kind = .char, .first_line = 0, .last_line = 0, .start_col = 1, .end_col = 3 };
     try draw(&w, .{ .rows = 2, .cols = 10 }, .{ .buffer = &b, .name = "", .top = 0, .highlighter = &h, .colors = colors, .selection = sel });
     try testing.expect(std.mem.indexOf(u8, w.buffered(), "\x1b[38;2;1;2;3mi" ++ reset ++ reverse ++ "\x1b[38;2;1;2;3mf" ++ reset ++ reverse ++ " " ++ reset ++ "x") != null);
+}
+
+test "the cursor line is shaded to the edge, except where selected" {
+    var b: Buffer = try .init(testing.allocator, "ab\ncd\n");
+    defer b.deinit();
+    var buf: [4096]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const shade = "\x1b[48;2;1;2;3m";
+    const view: View = .{ .buffer = &b, .name = "", .top = 0, .cursor = .{ .line = 1 }, .cursorline = .{ .rgb = .{ 1, 2, 3 } } };
+    try draw(&w, .{ .rows = 3, .cols = 10 }, view);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "\x1b[1;1Hab\x1b[K") != null);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "\x1b[2;1H" ++ shade ++ "cd" ++ reset ++ shade ++ "\x1b[K" ++ reset) != null);
+
+    w = .fixed(&buf);
+    var selected = view;
+    selected.selection = .{ .kind = .char, .first_line = 1, .last_line = 1, .start_col = 1, .end_col = 2 };
+    try draw(&w, .{ .rows = 3, .cols = 10 }, selected);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), shade ++ "c" ++ reset ++ reverse ++ "d" ++ reset ++ shade ++ "\x1b[K") != null);
 }
 
 test "the gutter grows with the line count" {

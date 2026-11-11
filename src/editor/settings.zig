@@ -27,6 +27,8 @@ pub const Settings = struct {
     number: bool = false,
     /// ...or its distance from the cursor's line, which shows its own.
     relativenumber: bool = false,
+    /// Shade the cursor's line, in `cursorline_color`.
+    cursorline: bool = true,
     /// How long a message stays in the bottom row before the status bar
     /// comes back, in milliseconds; 0 keeps it until the next key.
     messagetime: usize = 1000,
@@ -37,6 +39,8 @@ pub const Settings = struct {
     syntax: bool = true,
     /// Set by `color` lines, not `set`.
     colors: syntax_.Colors = syntax_.default_colors,
+    /// The cursor line's background; set by `color cursorline`.
+    cursorline_color: syntax_.Color = .{ .rgb = .{ 0x30, 0x30, 0x30 } },
 };
 
 pub const max_width = 32;
@@ -50,11 +54,12 @@ const Option = enum {
     shiftwidth,
     number,
     relativenumber,
+    cursorline,
     messagetime,
     autoclose,
     syntax,
 
-    const short = [_][]const u8{ "ic", "scs", "ai", "et", "ts", "sw", "nu", "rnu", "mt", "ac", "syn" };
+    const short = [_][]const u8{ "ic", "scs", "ai", "et", "ts", "sw", "nu", "rnu", "cul", "mt", "ac", "syn" };
 
     /// For the settings file and --help.
     const about = [_][]const u8{
@@ -66,6 +71,7 @@ const Option = enum {
         "How many spaces expandtab inserts (1 to 32)",
         "Line numbers down the left...",
         "...or each line's distance from the cursor",
+        "Shade the cursor's line",
         "How long messages show, in ms (0: until a key)",
         "Typed brackets and quotes come in pairs",
         "Colour files by the language files in syntax/",
@@ -99,6 +105,7 @@ fn valueOf(settings: *Settings, option: Option) Value {
         .shiftwidth => .{ .number = &settings.shiftwidth },
         .number => .{ .flag = &settings.number },
         .relativenumber => .{ .flag = &settings.relativenumber },
+        .cursorline => .{ .flag = &settings.cursorline },
         .messagetime => .{ .number = &settings.messagetime },
         .autoclose => .{ .flag = &settings.autoclose },
         .syntax => .{ .flag = &settings.syntax },
@@ -153,12 +160,21 @@ fn color(ed: *Editor, args: []const u8) bool {
         ed.setMessage(true, "not a colour: {s} (a name like green or brightblue, #rrggbb, or none)", .{words[n - 1]});
         return false;
     };
-    for (words[0 .. n - 1]) |name| if (std.meta.stringToEnum(syntax_.Group, name) == null) {
-        ed.setMessage(true, "not a group: {s} (comment string number keyword type constant function todo)", .{name});
+    for (words[0 .. n - 1]) |name| if (!isCursorline(name) and std.meta.stringToEnum(syntax_.Group, name) == null) {
+        ed.setMessage(true, "not a group: {s} (comment string number keyword type constant function todo cursorline)", .{name});
         return false;
     };
-    for (words[0 .. n - 1]) |name| ed.settings.colors.set(std.meta.stringToEnum(syntax_.Group, name).?, value);
+    for (words[0 .. n - 1]) |name| {
+        if (isCursorline(name)) {
+            ed.settings.cursorline_color = value;
+        } else ed.settings.colors.set(std.meta.stringToEnum(syntax_.Group, name).?, value);
+    }
     return true;
+}
+
+/// `color cursorline` is the cursor line's background, not a group.
+fn isCursorline(name: []const u8) bool {
+    return std.mem.eql(u8, name, "cursorline");
 }
 
 /// The arguments of a `set` line. Returns false, with the reason as the
@@ -287,6 +303,7 @@ test "the settings list for --help" {
         \\  shiftwidth     sw  4    How many spaces expandtab inserts (1 to 32)
         \\  number         nu  off  Line numbers down the left...
         \\  relativenumber rnu off  ...or each line's distance from the cursor
+        \\  cursorline     cul on   Shade the cursor's line
         \\  messagetime    mt  1000 How long messages show, in ms (0: until a key)
         \\  autoclose      ac  off  Typed brackets and quotes come in pairs
         \\  syntax         syn on   Colour files by the language files in syntax/
@@ -355,7 +372,7 @@ test "color lines give one or more groups a colour" {
     load(&e, "color keyword blurple");
     try testing.expectEqualStrings("zvimrc line 1: not a colour: blurple (a name like green or brightblue, #rrggbb, or none)", e.message.text());
     load(&e, "color keywords red");
-    try testing.expectEqualStrings("zvimrc line 1: not a group: keywords (comment string number keyword type constant function todo)", e.message.text());
+    try testing.expectEqualStrings("zvimrc line 1: not a group: keywords (comment string number keyword type constant function todo cursorline)", e.message.text());
     load(&e, "color red");
     try testing.expectEqualStrings("zvimrc line 1: color needs groups and a colour: color keyword type magenta", e.message.text());
     try testing.expectEqual(Color{ .rgb = .{ 0xe5, 0xc0, 0x7b } }, e.settings.colors.get(.keyword));
