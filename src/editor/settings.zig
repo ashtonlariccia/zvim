@@ -40,7 +40,7 @@ pub const Settings = struct {
     /// Set by `color` lines, not `set`.
     colors: syntax_.Colors = syntax_.default_colors,
     /// The cursor line's background; set by `color cursorline`.
-    cursorline_color: syntax_.Color = .{ .rgb = .{ 0x2a, 0x2b, 0x3c } },
+    cursorline_color: syntax_.Color = .{ .rgb = .{ 0x2b, 0x2b, 0x2b } },
 };
 
 pub const max_width = 32;
