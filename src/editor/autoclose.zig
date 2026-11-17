@@ -162,6 +162,7 @@ test "Enter between braces puts the closer on its own line, the cursor indented"
 test "off: nothing is added" {
     var e = try h.testEditor("");
     defer e.deinit();
+    e.settings.autoclose = false;
     try h.typeThenEscape(&e, "i(\"{\r");
     try h.expectText(&e, "(\"{\n\n");
 }

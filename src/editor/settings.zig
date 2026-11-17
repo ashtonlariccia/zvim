@@ -18,15 +18,15 @@ pub const Settings = struct {
     /// Line numbers down the left: each line's own...
     number: bool = false,
     /// ...or its distance from the cursor's line, which shows its own.
-    relativenumber: bool = false,
+    relativenumber: bool = true,
     /// Shade the cursor's line.
     cursorline: bool = true,
     /// How long a message stays in the bottom row before the status bar
     /// comes back, in milliseconds; 0 keeps it until the next key.
-    messagetime: usize = 1000,
+    messagetime: usize = 1250,
     /// Brackets and quotes typed in insert mode come in pairs (see
     /// autoclose.zig).
-    autoclose: bool = false,
+    autoclose: bool = true,
 };
 
 pub const max_width = 32;
