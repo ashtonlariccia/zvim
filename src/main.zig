@@ -5,8 +5,6 @@ const file = @import("file.zig");
 const Editor = @import("Editor.zig");
 const Decoder = @import("keys.zig").Decoder;
 const crash = @import("crash.zig");
-const settings = @import("editor/settings.zig");
-const syntax = @import("syntax.zig");
 const build_options = @import("build_options");
 
 /// On a crash, save unsaved changes and restore the terminal first.
@@ -17,7 +15,6 @@ pub fn main(init: std.process.Init) !void {
     var path: []const u8 = "";
     // +N opens at line N, + at the last line.
     var start_line: ?usize = null;
-    var clean = false;
     for (args[1..]) |arg| {
         const help_flag = std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
         const version_flag = std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v");
@@ -28,9 +25,7 @@ pub fn main(init: std.process.Init) !void {
             try stdout.interface.flush();
             return;
         }
-        if (std.mem.eql(u8, arg, "--clean") or std.mem.eql(u8, arg, "-c")) {
-            clean = true;
-        } else if (arg.len > 0 and arg[0] == '+') {
+        if (arg.len > 0 and arg[0] == '+') {
             start_line = if (arg.len == 1) std.math.maxInt(usize) else std.fmt.parseInt(usize, arg[1..], 10) catch
                 fatal("not a line number: {s}", .{arg});
         } else if (arg.len > 1 and arg[0] == '-') {
@@ -49,18 +44,12 @@ pub fn main(init: std.process.Init) !void {
     defer editor.deinit();
     editor.crlf = loaded.crlf;
     editor.readonly = isReadOnly(init.io, path);
-    if (!clean) loadSettings(init, &editor);
-    var highlighter: ?syntax.Highlighter = if (!clean and editor.settings.syntax and path.len > 0)
-        try loadLanguage(init, &editor, path)
-    else
-        null;
-    defer if (highlighter) |*h| h.deinit();
     if (start_line) |n| try editor.goToLine(n);
     noteRecoveryFile(&editor, init.io, path);
 
     // `run` restores the terminal when it returns; anything but a normal
     // quit then saves unsaved changes to a recovery file.
-    const end = run(init, &editor, if (highlighter) |*h| h else null) catch |err| {
+    const end = run(init, &editor) catch |err| {
         var buf: crash.PathBuffer = undefined;
         if (crash.saveRecovery(&editor, &buf)) |saved| {
             std.debug.print("zvim: {s}. Unsaved changes were saved to {s}\n", .{ @errorName(err), saved });
@@ -74,79 +63,6 @@ pub fn main(init: std.process.Init) !void {
         }
         std.process.exit(1);
     }
-}
-
-/// Applies the settings file, if there is one: $XDG_CONFIG_HOME/zvim/zvimrc,
-/// or ~/.config/zvim/zvimrc.
-fn loadSettings(init: std.process.Init, editor: *Editor) void {
-    const arena = init.arena.allocator();
-    const path = settingsPath(init) orelse return;
-    const contents = std.Io.Dir.cwd().readFileAlloc(init.io, path, arena, .limited(max_settings_bytes)) catch |err| {
-        if (err != error.FileNotFound) editor.setMessage(true, "cannot read {s}: {s}", .{ path, @errorName(err) });
-        return;
-    };
-    settings.load(editor, contents);
-}
-
-/// The language file in the config folder's syntax/ that's for the file
-/// at `path`, ready to colour it; the first by name if several are.
-fn loadLanguage(init: std.process.Init, editor: *Editor, path: []const u8) !?syntax.Highlighter {
-    const arena = init.arena.allocator();
-    const config = configDir(init) orelse return null;
-    const syntax_dir = try std.fs.path.join(arena, &.{ config, "syntax" });
-    var dir = std.Io.Dir.cwd().openDir(init.io, syntax_dir, .{ .iterate = true }) catch return null;
-    defer dir.close(init.io);
-
-    var names: std.ArrayList([]const u8) = .empty;
-    var it = dir.iterate();
-    while (it.next(init.io) catch null) |entry| {
-        if (entry.kind == .file or entry.kind == .sym_link) try names.append(arena, try arena.dupe(u8, entry.name));
-    }
-    std.mem.sort([]const u8, names.items, {}, struct {
-        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.lessThan(u8, a, b);
-        }
-    }.lessThan);
-
-    var first_line: [256]u8 = undefined;
-    const first_len = @min(editor.lineEnd(0), first_line.len);
-    editor.buffer.read(0, first_line[0..first_len]);
-
-    // A problem in any language file is reported (one in this file's
-    // language first): a mistake can be why a language isn't picked.
-    var found: ?syntax.Language = null;
-    errdefer if (found) |*lang| lang.deinit();
-    var report: ?struct { name: []const u8, problem: syntax.Problem } = null;
-    for (names.items) |name| {
-        const contents = dir.readFileAlloc(init.io, name, arena, .limited(max_settings_bytes)) catch continue;
-        var problem: syntax.Problem = .{};
-        var lang = try syntax.Language.parse(init.gpa, contents, &problem);
-        const is_for = found == null and lang.isFor(path, first_line[0..first_len]);
-        if (problem.len > 0 and (report == null or is_for)) report = .{ .name = name, .problem = problem };
-        if (is_for) found = lang else lang.deinit();
-    }
-    if (report) |r| if (editor.message.len == 0) {
-        editor.setMessage(true, "syntax/{s} line {d}: {s}", .{ r.name, r.problem.line, r.problem.text() });
-    };
-    return if (found) |lang| .init(init.gpa, lang) else null;
-}
-
-/// A settings file larger than this isn't read.
-const max_settings_bytes = 1 << 20;
-
-/// $XDG_CONFIG_HOME/zvim, or ~/.config/zvim.
-fn configDir(init: std.process.Init) ?[]const u8 {
-    const arena = init.arena.allocator();
-    const env = init.environ_map;
-    const xdg = env.get("XDG_CONFIG_HOME") orelse "";
-    return if (xdg.len > 0)
-        std.fs.path.join(arena, &.{ xdg, "zvim" }) catch null
-    else
-        std.fs.path.join(arena, &.{ env.get("HOME") orelse return null, ".config", "zvim" }) catch null;
-}
-
-fn settingsPath(init: std.process.Init) ?[]const u8 {
-    return std.fs.path.join(init.arena.allocator(), &.{ configDir(init) orelse return null, "zvimrc" }) catch null;
 }
 
 /// Whether `path` exists but can't be written by this user.
@@ -187,7 +103,7 @@ const DiskStamp = struct {
     }
 };
 
-fn run(init: std.process.Init, editor: *Editor, highlighter: ?*syntax.Highlighter) !enum { quit, hangup } {
+fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
     var term = try Terminal.init();
     defer term.deinit();
     crash.install(editor, &term);
@@ -214,7 +130,6 @@ fn run(init: std.process.Init, editor: *Editor, highlighter: ?*syntax.Highlighte
         const nu = editor.settings.number;
         const rnu = editor.settings.relativenumber;
         const numbers: ui.Numbers = if (rnu) .relative else if (nu) .absolute else .none;
-        if (highlighter) |h| h.sync(&editor.buffer);
         try editor.scrollToCursor(ui.textRows(size), ui.textCols(size, numbers, editor.buffer.visibleLineCount()));
         const pos = try editor.cursorPos();
         const selection: ?ui.Selection = if (try editor.selection()) |sel| .{
@@ -247,9 +162,7 @@ fn run(init: std.process.Init, editor: *Editor, highlighter: ?*syntax.Highlighte
             },
             .selection = selection,
             .numbers = numbers,
-            .highlighter = highlighter,
-            .colors = editor.settings.colors,
-            .cursorline = if (editor.settings.cursorline) editor.settings.cursorline_color else null,
+            .cursorline = editor.settings.cursorline,
             .message = if (editor.message.len > 0)
                 .{ .text = editor.message.text(), .is_error = editor.message.is_error }
             else
@@ -336,62 +249,19 @@ fn run(init: std.process.Init, editor: *Editor, highlighter: ?*syntax.Highlighte
     }
 }
 
-const short_usage = "usage: zvim [-c] [+line] [file]";
+const short_usage = "usage: zvim [+line] [file]";
 
 fn writeUsage(w: *std.Io.Writer) !void {
     try w.writeAll(
-        \\usage: zvim [-c] [+line] [file]
+        \\usage: zvim [+line] [file]
         \\
         \\A small Vim-like editor. Opens `file` (created on the first :w if it
         \\doesn't exist), or an empty buffer. Keys work like Vim's: i to type,
         \\Esc to stop, :w to save, :q to quit, :q! to quit without saving.
         \\
         \\  +N              start at line N (+ alone: the last line)
-        \\  -c, --clean     ignore the settings file: the defaults below
         \\  -h, --help      show this help
         \\  -v, --version   show the version
-        \\
-        \\SETTINGS                    (short name, default)
-        \\
-    );
-    try settings.writeList(w);
-    try w.writeAll(
-        \\
-        \\  With relativenumber, the cursor's line shows its own number.
-        \\
-        \\  They're read at startup from ~/.config/zvim/zvimrc (or
-        \\  $XDG_CONFIG_HOME/zvim/zvimrc): set lines, any number of settings
-        \\  on each.
-        \\    " a comment
-        \\    set expandtab shiftwidth=4
-        \\    set noautoindent
-        \\  zvim never makes the file: without it, zvim uses the defaults. A
-        \\  bad line is skipped and reported when zvim starts.
-        \\
-        \\COLOURS AND LANGUAGES
-        \\  Files are coloured by language files in ~/.config/zvim/syntax/, one
-        \\  per language, written by you. Without them nothing is coloured.
-        \\  A language file has one of these per line (" starts a comment line):
-        \\    extensions c h              the files it's for
-        \\    shebang python3             scripts it's for, by their #! line
-        \\    keyword if else while       words in a group (any group, any words)
-        \\    span comment /* */          from /* to */, across lines
-        \\    span comment //             from // to the end of the line
-        \\    span string " " escape=\ oneline  must close on the line it opens on
-        \\    span keyword # start        only first on a line
-        \\    span comment # alone        only at the start or after a blank
-        \\    prefix constant $           $name
-        \\    suffix function !           name!
-        \\    numbers                     colour numbers
-        \\    functions                   colour a word followed by (
-        \\  The groups, with their default colours:
-        \\
-    );
-    try settings.writeColors(w, "    {s: <9} {f}\n");
-    try w.writeAll(
-        \\  zvimrc changes them: color keyword type #e5c07b (a name, #rrggbb,
-        \\  or none). set nosyntax turns colouring off. The cursor line's shade
-        \\  is #2b2b2b; color cursorline changes it.
         \\
         \\WHAT ZVIM DOES BY ITSELF
         \\  Clipboard     every yank also goes to the system clipboard, where the
@@ -406,8 +276,6 @@ fn writeUsage(w: *std.Io.Writer) !void {
         \\  Line endings  Windows (CRLF) files stay that way: [CRLF]
         \\
         \\DIFFERENT FROM VIM
-        \\  Settings live only in the settings file: there's no :set, and there
-        \\  are only the ones above.
         \\  / and ? search for plain text, not patterns.
         \\  One file at a time; :e reloads it, it doesn't open another.
         \\  One register: no "a, and no macros, marks, :s, windows or tabs.
@@ -469,5 +337,4 @@ test {
     _ = @import("History.zig");
     _ = @import("crash.zig");
     _ = @import("editor/words.zig");
-    _ = @import("syntax.zig");
 }
