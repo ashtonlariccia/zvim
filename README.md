@@ -14,7 +14,7 @@ To install, copy one binary somewhere on your PATH; there's nothing else.
 and macOS (x86_64, aarch64) into `zig-out/dist/`, with a `SHA256SUMS` file
 (`sha256sum -c SHA256SUMS`), e.g.
 
-    cp zig-out/dist/zvim-0.3.4-x86_64-linux ~/.bin/zvim
+    cp zig-out/dist/zvim-0.3.5-x86_64-linux ~/.bin/zvim
 
 ## Settings
 
