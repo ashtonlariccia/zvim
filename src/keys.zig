@@ -22,6 +22,10 @@ pub const Key = union(enum) {
     /// Text pasted into the terminal (bracketed paste), to insert literally.
     /// Points into the input buffer.
     paste: []const u8,
+    /// Part of a reply from the terminal in an OSC sequence (`ESC ] ...`,
+    /// such as the clipboard's contents), without the `ESC ]`; `done` on the
+    /// last part. Never typed: for whoever asked. Points into the input buffer.
+    osc: struct { bytes: []const u8, done: bool },
 };
 
 const paste_begin = "\x1b[200~";
@@ -37,6 +41,9 @@ const paste_end = "\x1b[201~";
 pub const Decoder = struct {
     bytes: []const u8,
     i: usize = 0,
+    /// Inside an OSC reply; carried over from one read to the next, like
+    /// `in_paste`.
+    in_osc: bool = false,
     /// A key still to return: the second of the two keys Alt-x makes.
     queued: ?Key = null,
     /// Set on seeing the terminal's answer to the keyboard protocol query:
@@ -81,6 +88,27 @@ pub const Decoder = struct {
                 d.i += if (end) |e| e + paste_end.len else rest.len;
                 if (end != null) d.in_paste = false;
                 if (pasted.len > 0) return .{ .paste = pasted };
+                continue;
+            }
+            if (d.in_osc) {
+                // It ends with BEL or ST (ESC \\).
+                const bel = std.mem.indexOfScalar(u8, rest, 0x07);
+                const st = std.mem.indexOf(u8, rest, "\x1b\\");
+                const end: ?usize = if (bel != null and st != null) @min(bel.?, st.?) else bel orelse st;
+                if (end) |e| {
+                    d.i += e + @as(usize, if (rest[e] == 0x07) 1 else 2);
+                    d.in_osc = false;
+                    return .{ .osc = .{ .bytes = rest[0..e], .done = true } };
+                }
+                // Keep back a final ESC that may start the ST.
+                const n = rest.len - @intFromBool(!d.final and rest[rest.len - 1] == 0x1b);
+                d.i += n;
+                if (n > 0) return .{ .osc = .{ .bytes = rest[0..n], .done = false } };
+                return null;
+            }
+            if (std.mem.startsWith(u8, rest, "\x1b]")) {
+                d.i += 2;
+                d.in_osc = true;
                 continue;
             }
             if (std.mem.startsWith(u8, rest, paste_begin)) {
@@ -180,6 +208,7 @@ pub const Decoder = struct {
     fn incomplete(s: []const u8) bool {
         if (s[0] == 0x1b) {
             if (s.len == 1) return true;
+            if (s[1] == ']') return false;
             if (s[1] == '[') {
                 for (s[2..]) |c| if (c >= 0x40 and c <= 0x7e) return false;
                 return true;
@@ -295,6 +324,25 @@ test "focus reports are noted, not typed" {
     var d: Decoder = .{ .bytes = "\x1b[O\x1b[Ij" };
     try testing.expectEqual(Key{ .char = 'j' }, d.next().?);
     try testing.expect(d.focus_in);
+}
+
+test "an OSC reply comes through whole or in parts, never as keys" {
+    var d: Decoder = .{ .bytes = "\x1b]52;c;aGk=\x07j" };
+    const k = d.next().?;
+    try testing.expectEqualStrings("52;c;aGk=", k.osc.bytes);
+    try testing.expect(k.osc.done);
+    try testing.expectEqual(Key{ .char = 'j' }, d.next().?);
+
+    var d1: Decoder = .{ .bytes = "\x1b]52;c;aG\x1b", .final = false };
+    const a = d1.next().?;
+    try testing.expectEqualStrings("52;c;aG", a.osc.bytes);
+    try testing.expect(!a.osc.done and d1.in_osc);
+    try testing.expectEqual(@as(?Key, null), d1.next());
+    try testing.expectEqualStrings("\x1b", d1.leftover());
+    var d2: Decoder = .{ .bytes = "\x1b\\x", .in_osc = true };
+    const b = d2.next().?;
+    try testing.expect(b.osc.done and b.osc.bytes.len == 0);
+    try testing.expectEqual(Key{ .char = 'x' }, d2.next().?);
 }
 
 test "bracketed paste comes through as literal text" {

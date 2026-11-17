@@ -14,7 +14,7 @@ To install, copy one binary somewhere on your PATH; there's nothing else.
 and macOS (x86_64, aarch64) into `zig-out/dist/`, with a `SHA256SUMS` file
 (`sha256sum -c SHA256SUMS`), e.g.
 
-    cp zig-out/dist/zvim-0.3.7-x86_64-linux ~/.bin/zvim
+    cp zig-out/dist/zvim-0.3.8-x86_64-linux ~/.bin/zvim
 
 ## Settings
 
@@ -35,6 +35,7 @@ nearly everything testable as "type these keys, expect this text".
 | `src/History.zig` | Undo/redo history of grouped edits |
 | `src/text.zig` | UTF-8, display widths, stepping through a line's characters |
 | `src/file.zig` | Loading, and atomic saving |
+| `src/clipboard.zig` | Copying to and pasting from the system clipboard, locally, over SSH and in tmux |
 | `src/crash.zig` | Saves unsaved changes to a recovery file on a crash or hangup |
 | `src/Editor.zig` | Editor state, key dispatch, edit primitives, undo, cursor and view |
 | `src/editor/normal.zig` | Normal-mode keys: counts, operators, shortcuts, `.` |

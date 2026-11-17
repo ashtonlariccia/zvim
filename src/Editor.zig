@@ -87,6 +87,8 @@ autoindent_at: ?usize = null,
 settings: Settings = .{},
 /// Ctrl-Z was pressed; `handleKey` returns `.suspend`.
 suspend_requested: bool = false,
+/// Set by "+p or "+P, for handleKey to hand back as `.paste_clipboard`.
+clipboard_request: ?ClipboardPaste = null,
 /// The last key's command couldn't run (a motion with nowhere to go, or a
 /// missing f/t target). Ends a `.` replay early.
 failed: bool = false,
@@ -149,14 +151,17 @@ pub const Pending = struct {
     /// A count typed after the operator, as in d3w.
     op_count: usize = 0,
     wait: Wait = .none,
+    /// "+ or "* was typed: p and P paste from the system clipboard.
+    clipboard: bool = false,
 
     /// Keys waiting for one more: g (gg), f/t/F/T (a character), r (a
-    /// character), and i/a after an operator or in visual mode (an object).
-    pub const Wait = union(enum) { none, g, find: words.FindKind, replace, object: Around };
+    /// character), i/a after an operator or in visual mode (an object), and
+    /// " (a register; only + and *, the system clipboard).
+    pub const Wait = union(enum) { none, g, find: words.FindKind, replace, object: Around, register };
     pub const Around = enum { inside, around };
 
     pub fn isEmpty(p: Pending) bool {
-        return p.count == 0 and p.op == null and p.wait == .none;
+        return p.count == 0 and p.op == null and p.wait == .none and !p.clipboard;
     }
 };
 
@@ -186,7 +191,11 @@ pub const Action = union(enum) {
     @"suspend",
     /// Load the file at `path` again and hand it to `reloaded`.
     reload: []const u8,
+    /// "+p or "+P: read the system clipboard and hand it to `pasteClipboard`.
+    paste_clipboard: ClipboardPaste,
 };
+
+pub const ClipboardPaste = struct { before: bool, count: usize };
 
 pub fn init(gpa: Allocator, buffer: Buffer, name: []const u8) !Editor {
     var self: Editor = .{ .gpa = gpa, .buffer = buffer };
@@ -381,6 +390,12 @@ pub fn handleKey(self: *Editor, key: Key) Allocator.Error!Action {
         self.setMessage(true, "W10: Warning: Changing a readonly file", .{});
     }
 
+    if (self.clipboard_request) |request| {
+        self.clipboard_request = null;
+        self.dot.excluded = true;
+        return .{ .paste_clipboard = request };
+    }
+
     if (self.suspend_requested) {
         self.suspend_requested = false;
         self.dot.excluded = true;
@@ -481,6 +496,31 @@ pub fn toOffset(self: *Editor, p: words.Pos) usize {
 pub fn toPos(self: *Editor, offset: usize) words.Pos {
     const line = self.buffer.lineOf(offset);
     return .{ .line = line, .byte = offset - self.buffer.lineStart(line) };
+}
+
+/// The system clipboard's text, for a "+p or "+P that asked for it: pasted
+/// like p or P, without changing the register (except that pasting over a
+/// selection puts what it replaced there, as p does). Text that comes after
+/// zvim has left normal and visual mode is dropped.
+pub fn pasteClipboard(self: *Editor, clip: []const u8, request: ClipboardPaste) !void {
+    if (self.mode != .normal and self.mode != .visual) return;
+    if (clip.len == 0) return self.setMessage(true, "The clipboard is empty", .{});
+    var saved = self.register;
+    self.register = .{ .kind = if (clip[clip.len - 1] == '\n') .line else .char };
+    try self.register.text.appendSlice(self.gpa, clip);
+    const over_selection = self.mode == .visual;
+    @import("editor/operators.zig").paste(self, request.before, request.count) catch |err| {
+        self.register.text.deinit(self.gpa);
+        self.register = saved;
+        return err;
+    };
+    if (over_selection) {
+        saved.text.deinit(self.gpa);
+    } else {
+        self.register.text.deinit(self.gpa);
+        self.register = saved;
+    }
+    try self.history.commit(self.gpa);
 }
 
 /// Called after a yank: the register goes to the system clipboard.

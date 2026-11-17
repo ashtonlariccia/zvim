@@ -5,6 +5,7 @@ const file = @import("file.zig");
 const Editor = @import("Editor.zig");
 const Decoder = @import("keys.zig").Decoder;
 const crash = @import("crash.zig");
+const clipboard = @import("clipboard.zig");
 const build_options = @import("build_options");
 
 /// On a crash, save unsaved changes and restore the terminal first.
@@ -151,6 +152,14 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
     // at the start of `in_buf` for the rest, for up to `key_wait_ms`.
     var pending: usize = 0;
     var in_paste = false;
+    var in_osc = false;
+    // A reply from the terminal in an OSC sequence, as it comes in.
+    var osc: std.ArrayList(u8) = .empty;
+    defer osc.deinit(init.gpa);
+    const place: clipboard.Place = .of(init.environ_map);
+    // A "+p waiting for the terminal to answer with the clipboard, and
+    // when to give up on it.
+    var clipboard_wait: ?struct { request: Editor.ClipboardPaste, until: i64 } = null;
     // The terminal speaks the kitty keyboard protocol: Escape comes as a
     // sequence, so a lone escape byte is always the start of one.
     var keyboard_protocol = false;
@@ -160,10 +169,6 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
     // When the message in the bottom row gives way to the status bar again.
     var message_until = messageDeadline(init.io, editor);
     while (true) {
-        if (editor.clipboard_pending) {
-            editor.clipboard_pending = false;
-            try copyToClipboard(init.gpa, out, editor.clipboard.items);
-        }
         const nu = editor.settings.number;
         const rnu = editor.settings.relativenumber;
         const numbers: ui.Numbers = if (rnu) .relative else if (nu) .absolute else .none;
@@ -207,10 +212,12 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
         });
         try out.flush();
 
+        const now = std.Io.Timestamp.now(init.io, .awake).toMilliseconds();
+        const until = earliest(message_until, if (clipboard_wait) |w| w.until else null);
         const wait: ?i32 = if (pending > 0)
             (if (keyboard_protocol) sequence_wait_ms else key_wait_ms)
-        else if (message_until) |until|
-            @intCast(std.math.clamp(until - std.Io.Timestamp.now(init.io, .awake).toMilliseconds(), 0, std.math.maxInt(i32)))
+        else if (until) |u|
+            @intCast(std.math.clamp(u - now, 0, std.math.maxInt(i32)))
         else
             null;
         const event = try term.next(in_buf[pending..], wait);
@@ -221,16 +228,34 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
             },
             .hangup => return .hangup,
             .timeout => if (pending == 0) {
-                editor.message.len = 0;
-                message_until = null;
+                const later = std.Io.Timestamp.now(init.io, .awake).toMilliseconds();
+                if (clipboard_wait != null and later >= clipboard_wait.?.until) {
+                    clipboard_wait = null;
+                    editor.setMessage(true, "No answer from the terminal: it may not let programs read the clipboard (OSC 52)", .{});
+                    message_until = messageDeadline(init.io, editor);
+                } else if (message_until != null and later >= message_until.?) {
+                    editor.message.len = 0;
+                    message_until = null;
+                }
                 continue;
             } else .{ in_buf[0..pending], true },
             .input => |bytes| .{ in_buf[0 .. pending + bytes.len], false },
         };
         var focus_in = false;
         while (true) {
-            var keys: Decoder = .{ .bytes = input, .in_paste = in_paste, .final = final };
+            var keys: Decoder = .{ .bytes = input, .in_paste = in_paste, .in_osc = in_osc, .final = final };
             while (keys.next()) |key| {
+                if (key == .osc) {
+                    if (osc.items.len < 2 * clipboard.max_read) try osc.appendSlice(init.gpa, key.osc.bytes);
+                    if (!key.osc.done) continue;
+                    defer osc.clearRetainingCapacity();
+                    const w = clipboard_wait orelse continue;
+                    const clip = try clipboard.decodeReply(init.gpa, osc.items) orelse continue;
+                    defer init.gpa.free(clip);
+                    clipboard_wait = null;
+                    try editor.pasteClipboard(clip, w.request);
+                    continue;
+                }
                 if (build_options.test_crash and key == .ctrl and key.ctrl == 0x7c) {
                     @panic("test crash (Ctrl-\\ in a -Dtest-crash build)");
                 }
@@ -238,6 +263,16 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
                     .none => {},
                     .quit => return .quit,
                     .reload => |reload_path| try reload(init.io, editor, reload_path, &disk),
+                    .paste_clipboard => |request| switch (try clipboard.read(init.gpa, init.io, place, out)) {
+                        .text => |clip| {
+                            defer init.gpa.free(clip);
+                            try editor.pasteClipboard(clip, request);
+                        },
+                        .asked => clipboard_wait = .{
+                            .request = request,
+                            .until = std.Io.Timestamp.now(init.io, .awake).toMilliseconds() + clipboard.timeout_ms,
+                        },
+                    },
                     .@"suspend" => {
                         term.suspendProcess();
                         size = Terminal.size();
@@ -262,6 +297,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
                 }
             }
             in_paste = keys.in_paste;
+            in_osc = keys.in_osc;
             keyboard_protocol = keyboard_protocol or keys.keyboard_protocol;
             focus_in = focus_in or keys.focus_in;
             const left = keys.leftover();
@@ -276,6 +312,13 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
             break;
         }
         if (focus_in) try checkDisk(init.io, editor, &disk, &warned);
+        if (editor.clipboard_pending) {
+            editor.clipboard_pending = false;
+            const text = editor.clipboard.items;
+            if (try clipboard.copy(init.gpa, init.io, place, out, text) == .too_big) {
+                editor.setMessage(true, "Yanked {d} KB: too big for the system clipboard (max {d} KB), kept in zvim only", .{ text.len / 1024, clipboard.max_copy / 1024 });
+            }
+        }
         // Each key clears the message; one there now is new.
         message_until = messageDeadline(init.io, editor);
     }
@@ -297,7 +340,10 @@ fn writeUsage(w: *std.Io.Writer) !void {
         \\
         \\WHAT ZVIM DOES BY ITSELF
         \\  Clipboard     every yank also goes to the system clipboard, where the
-        \\                terminal allows it (also over SSH)
+        \\                terminal allows it (also over SSH; in tmux, through
+        \\                tmux). Yanks over 100 KB stay in zvim. "+p and "+P
+        \\                paste from it: locally with wl-paste, xclip, xsel or
+        \\                pbpaste; over SSH by asking the terminal (OSC 52)
         \\  Pasting       text pasted from the terminal goes in as it is, in any
         \\                mode, without being indented or run as keys
         \\  Recovery      after a crash or a lost connection, unsaved text is in
@@ -311,7 +357,8 @@ fn writeUsage(w: *std.Io.Writer) !void {
         \\DIFFERENT FROM VIM
         \\  / and ? search for plain text, not patterns.
         \\  One file at a time; :e reloads it, it doesn't open another.
-        \\  One register: no "a, and no macros, marks, :s, windows or tabs.
+        \\  One register (and "+ or "* to paste from the system clipboard): no
+        \\  "a, and no macros, marks, :s, windows or tabs.
         \\  Files are read as UTF-8.
         \\
     );
@@ -336,15 +383,9 @@ const key_wait_ms = 50;
 /// split across reads.
 const sequence_wait_ms = 1000;
 
-/// Puts `text` on the system clipboard with OSC 52, which terminals such as
-/// wezterm, kitty and iTerm2 support, also over SSH.
-fn copyToClipboard(gpa: std.mem.Allocator, out: *std.Io.Writer, text: []const u8) !void {
-    const encoder = std.base64.standard.Encoder;
-    const encoded = try gpa.alloc(u8, encoder.calcSize(text.len));
-    defer gpa.free(encoded);
-    try out.writeAll("\x1b]52;c;");
-    try out.writeAll(encoder.encode(encoded, text));
-    try out.writeAll("\x07");
+/// The earlier of two optional times.
+fn earliest(a: ?i64, b: ?i64) ?i64 {
+    return if (a != null and b != null) @min(a.?, b.?) else a orelse b;
 }
 
 fn modeLabel(editor: *const Editor) []const u8 {
@@ -375,5 +416,6 @@ test {
     _ = @import("Editor.zig");
     _ = @import("History.zig");
     _ = @import("crash.zig");
+    _ = @import("clipboard.zig");
     _ = @import("editor/words.zig");
 }

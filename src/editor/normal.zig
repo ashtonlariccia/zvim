@@ -50,6 +50,17 @@ pub fn normalKey(ed: *Editor, key: Key) !void {
             ed.pending.wait = .none;
             return applyObject(ed, key, around == .around);
         },
+        .register => {
+            ed.pending.wait = .none;
+            if (key == .char and (key.char == '+' or key.char == '*')) {
+                ed.pending.clipboard = true;
+                return;
+            }
+            ed.pending = .{};
+            ed.failed = true;
+            if (key != .escape) ed.setMessage(true, "Only \"+ and \"* (the system clipboard): zvim has one register", .{});
+            return;
+        },
     }
 
     if (key == .char) {
@@ -77,6 +88,7 @@ pub fn normalKey(ed: *Editor, key: Key) !void {
             'F' => return waitFor(ed, .{ .find = .back_to }),
             'T' => return waitFor(ed, .{ .find = .back_till }),
             'r' => return waitFor(ed, .replace),
+            '"' => return waitFor(ed, .register),
             // After an operator or in visual mode, i and a start a text
             // object (diw, va"); otherwise they enter insert mode.
             'i', 'a' => if (ed.pending.op != null or ed.mode == .visual) {
@@ -92,6 +104,7 @@ pub fn normalKey(ed: *Editor, key: Key) !void {
 
     // The rest take at most a count.
     const count = ed.pending.count;
+    const clipboard = ed.pending.clipboard;
     const in_visual = ed.mode == .visual;
     if (ed.pending.op != null) {
         // An operator followed by something that isn't a motion: cancelled.
@@ -122,8 +135,9 @@ pub fn normalKey(ed: *Editor, key: Key) !void {
             'C' => try shortcut(ed, .change, .line_end, count),
             'S' => try lineShortcut(ed, .change, n),
             'Y' => try lineShortcut(ed, .yank, n),
-            'p' => try operators.paste(ed, false, n),
-            'P' => try operators.paste(ed, true, n),
+            'p', 'P' => if (clipboard) {
+                ed.clipboard_request = .{ .before = c == 'P', .count = n };
+            } else try operators.paste(ed, c == 'P', n),
             'J' => try operators.joinLines(ed, n),
             'u' => if (!in_visual) {
                 ed.dot.excluded = true;
@@ -389,4 +403,33 @@ test "Ctrl-C leaves insert and visual mode, cancels commands, and says how to qu
     try expectText(&e, "abc\n");
     try typeKeys(&e, "\x03");
     try testing.expectEqualStrings("Type :q! and press Enter to quit without saving", e.message.text());
+}
+
+test "\"+p asks for the system clipboard, and pastes it without touching the register" {
+    var e = try testEditor("one\ntwo\n");
+    defer e.deinit();
+    try typeKeys(&e, "yw"); // the register: "one"
+    for ("\"+") |c| try testing.expectEqual(Editor.Action.none, try e.handleKey(.{ .char = c }));
+    const action = try e.handleKey(.{ .char = 'p' });
+    try testing.expectEqual(Editor.ClipboardPaste{ .before = false, .count = 1 }, action.paste_clipboard);
+
+    try e.pasteClipboard("fresh\n", action.paste_clipboard); // ends in a newline: lines
+    try expectText(&e, "one\nfresh\ntwo\n");
+    try e.pasteClipboard("X", .{ .before = true, .count = 2 });
+    try expectText(&e, "one\nXXfresh\ntwo\n");
+    try typeKeys(&e, "u"); // each paste is its own undo step
+    try expectText(&e, "one\nfresh\ntwo\n");
+    try typeKeys(&e, "ggP");
+    try expectText(&e, "oneone\nfresh\ntwo\n");
+
+    for ("3\"*") |c| _ = try e.handleKey(.{ .char = c });
+    try testing.expectEqual(Editor.ClipboardPaste{ .before = true, .count = 3 }, (try e.handleKey(.{ .char = 'P' })).paste_clipboard);
+}
+
+test "\"a and other registers are refused" {
+    var e = try testEditor("x\n");
+    defer e.deinit();
+    try typeKeys(&e, "\"a");
+    try testing.expectEqualStrings("Only \"+ and \"* (the system clipboard): zvim has one register", e.message.text());
+    try testing.expect(e.pending.isEmpty());
 }
