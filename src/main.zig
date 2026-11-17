@@ -120,6 +120,9 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
     // at the start of `in_buf` for the rest, for up to `key_wait_ms`.
     var pending: usize = 0;
     var in_paste = false;
+    // The terminal speaks the kitty keyboard protocol: Escape comes as a
+    // sequence, so a lone escape byte is always the start of one.
+    var keyboard_protocol = false;
     // When the message in the bottom row gives way to the status bar again.
     var message_until = messageDeadline(init.io, editor);
     while (true) {
@@ -171,7 +174,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
         try out.flush();
 
         const wait: ?i32 = if (pending > 0)
-            key_wait_ms
+            (if (keyboard_protocol) sequence_wait_ms else key_wait_ms)
         else if (message_until) |until|
             @intCast(std.math.clamp(until - std.Io.Timestamp.now(init.io, .awake).toMilliseconds(), 0, std.math.maxInt(i32)))
         else
@@ -233,6 +236,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
                 }
             }
             in_paste = keys.in_paste;
+            keyboard_protocol = keyboard_protocol or keys.keyboard_protocol;
             const left = keys.leftover();
             // Something that long isn't a key on its way: decode it as is.
             if (left.len > 32 and !final) {
@@ -294,8 +298,14 @@ fn messageDeadline(io: std.Io, editor: *const Editor) ?i64 {
 
 /// How long to wait for the rest of a key whose first bytes arrived (an
 /// escape sequence or UTF-8 character split across reads), before deciding
-/// it's complete. A lone Escape takes this long to register.
+/// it's complete. In a terminal without the kitty keyboard protocol, a lone
+/// Escape takes this long to register.
 const key_wait_ms = 50;
+
+/// The same, with the keyboard protocol: Escape isn't a lone byte then, so
+/// it registers at once, and this only bounds the wait for a sequence
+/// split across reads.
+const sequence_wait_ms = 1000;
 
 /// Puts `text` on the system clipboard with OSC 52, which terminals such as
 /// wezterm, kitty and iTerm2 support, also over SSH.

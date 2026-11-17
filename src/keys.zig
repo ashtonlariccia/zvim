@@ -30,9 +30,18 @@ const paste_end = "\x1b[201~";
 /// Splits one read's worth of input into keys. An escape byte followed by
 /// more bytes in the same read starts an escape sequence (terminals send these
 /// in one write); a lone escape byte is the Escape key.
+///
+/// Terminals with the kitty keyboard protocol (see term.zig) send Escape,
+/// and Ctrl or Alt with a key, as `CSI code ; modifiers u`. These decode to
+/// the same keys as the plain bytes other terminals send.
 pub const Decoder = struct {
     bytes: []const u8,
     i: usize = 0,
+    /// A key still to return: the second of the two keys Alt-x makes.
+    queued: ?Key = null,
+    /// Set on seeing the terminal's answer to the keyboard protocol query:
+    /// it's on, so Escape never comes as a lone escape byte.
+    keyboard_protocol: bool = false,
     /// Inside a bracketed paste. Carry it over from one read to the next,
     /// since a long paste can span several.
     in_paste: bool = false,
@@ -49,6 +58,10 @@ pub const Decoder = struct {
     }
 
     pub fn next(d: *Decoder) ?Key {
+        if (d.queued) |key| {
+            d.queued = null;
+            return key;
+        }
         while (d.i < d.bytes.len) {
             const rest = d.bytes[d.i..];
             if (d.in_paste) {
@@ -79,26 +92,19 @@ pub const Decoder = struct {
                     if (isSequenceStart(rest)) {
                         const seq = sequenceLen(rest);
                         d.i += seq;
+                        if (isProtocolReply(rest[0..seq])) {
+                            d.keyboard_protocol = true;
+                            continue;
+                        }
+                        if (rest[seq - 1] == 'u') return d.protocolKey(rest[2 .. seq - 1]) orelse continue;
                         return sequenceKey(rest[0..seq]) orelse continue;
                     }
                     d.i += 1;
                     return .escape;
                 },
-                '\r', '\n' => {
+                0x00...0x1a, 0x1c...0x1f, 0x7f => {
                     d.i += 1;
-                    return .enter;
-                },
-                0x7f, 0x08 => {
-                    d.i += 1;
-                    return .backspace;
-                },
-                '\t' => {
-                    d.i += 1;
-                    return .tab;
-                },
-                0x00...0x07, 0x0b, 0x0c, 0x0e...0x1a, 0x1c...0x1f => {
-                    d.i += 1;
-                    return .{ .ctrl = b | 0x60 };
+                    return controlKey(b);
                 },
                 else => {
                     const ch = text.decode(rest);
@@ -110,6 +116,55 @@ pub const Decoder = struct {
             }
         }
         return null;
+    }
+
+    /// The key a control byte is: Enter, Tab, Backspace or Ctrl-something.
+    fn controlKey(b: u8) Key {
+        return switch (b) {
+            '\r', '\n' => .enter,
+            '\t' => .tab,
+            0x7f, 0x08 => .backspace,
+            0x1b => .escape,
+            else => .{ .ctrl = b | 0x60 },
+        };
+    }
+
+    /// `CSI ? flags u`: the terminal's answer when asked which keyboard
+    /// protocol flags are on.
+    fn isProtocolReply(seq: []const u8) bool {
+        return seq.len >= 4 and seq[2] == '?' and seq[seq.len - 1] == 'u';
+    }
+
+    /// A key in the kitty keyboard protocol, from the parameters of
+    /// `CSI code[:alternates] [; modifiers[:event]] u`. Ctrl-x becomes the
+    /// control byte it would otherwise be, and Alt-x becomes Escape then x,
+    /// as other terminals send it. Keys zvim has no use for give null.
+    fn protocolKey(d: *Decoder, params: []const u8) ?Key {
+        var fields = std.mem.splitScalar(u8, params, ';');
+        const code_field = fields.next().?;
+        const code_text = code_field[0 .. std.mem.indexOfScalar(u8, code_field, ':') orelse code_field.len];
+        const code = std.fmt.parseInt(u21, code_text, 10) catch return null;
+        const mods_field = fields.next() orelse "1";
+        const mods_text = mods_field[0 .. std.mem.indexOfScalar(u8, mods_field, ':') orelse mods_field.len];
+        const mods = (std.fmt.parseInt(u8, mods_text, 10) catch 1) -| 1;
+        const alt = mods & 2 != 0;
+        const ctrl = mods & 4 != 0;
+
+        const key: Key = switch (code) {
+            27 => .escape,
+            13 => .enter,
+            9 => .tab,
+            127, 8 => .backspace,
+            0x20...0x7e => if (ctrl)
+                controlKey(@intCast(code & 0x1f))
+            else
+                .{ .char = code },
+            0xa0...0xdfff, 0xf900...0x10ffff => if (ctrl) return null else .{ .char = code },
+            else => return null, // function keys, keypad, modifiers alone
+        };
+        if (!alt) return key;
+        d.queued = key;
+        return .escape;
     }
 
     /// Whether `s` is the beginning of a key whose remaining bytes may still
@@ -215,6 +270,18 @@ test "lone escape versus escape sequences" {
 
 test "unknown sequences and invalid bytes are dropped" {
     try expectKeys("\x1b[1;5Pa\xffb", &.{ .{ .char = 'a' }, .{ .char = 'b' } });
+}
+
+test "kitty keyboard protocol keys decode like the plain bytes" {
+    try expectKeys("\x1b[27u\x1b[97;5u\x1b[92;5u\x1b[105;5u\x1b[91;5u", &.{ .escape, .{ .ctrl = 'a' }, .{ .ctrl = '|' }, .tab, .escape });
+    try expectKeys("\x1b[106;3u\x1b[13;2u\x1b[127;5u", &.{ .escape, .{ .char = 'j' }, .enter, .backspace });
+    try expectKeys("\x1b[97:65;6ux\x1b[57399u\x1b[1;5A", &.{ .{ .ctrl = 'a' }, .{ .char = 'x' }, .up });
+}
+
+test "the keyboard protocol reply is noted, not typed" {
+    var d: Decoder = .{ .bytes = "\x1b[?1uj" };
+    try testing.expectEqual(Key{ .char = 'j' }, d.next().?);
+    try testing.expect(d.keyboard_protocol);
 }
 
 test "bracketed paste comes through as literal text" {
