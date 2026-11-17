@@ -125,6 +125,7 @@ pub fn normalKey(ed: *Editor, key: Key) !void {
             },
             'v' => try visual.toggleVisual(ed, .block),
             'z' => ed.suspend_requested = true,
+            'l' => ed.redraw_requested = true,
             else => {},
         },
         .char => |c| switch (c) {

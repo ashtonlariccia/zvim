@@ -87,6 +87,8 @@ autoindent_at: ?usize = null,
 settings: Settings = .{},
 /// Ctrl-Z was pressed; `handleKey` returns `.suspend`.
 suspend_requested: bool = false,
+/// Ctrl-L: the next frame redraws the whole screen, not just what changed.
+redraw_requested: bool = false,
 /// Set by "+p or "+P, for handleKey to hand back as `.paste_clipboard`.
 clipboard_request: ?ClipboardPaste = null,
 /// The last key's command couldn't run (a motion with nowhere to go, or a

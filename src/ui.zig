@@ -1,4 +1,10 @@
-//! Frame rendering. Draws a full frame into a writer; the caller flushes.
+//! Frame rendering. Draws a frame into a writer; the caller flushes.
+//!
+//! With a `Frame` holding what was drawn last, only what changed is sent:
+//! the frame is cut into segments (each row's line number, each row's text,
+//! and the bottom row), each starting at a set position and ending with
+//! styles reset, and a segment the same as last time is skipped. Over SSH
+//! that's the difference between a screenful per key and a few bytes.
 //!
 //! Terminals don't all agree on how wide a character is (combining marks,
 //! emoji and "ambiguous" characters vary). Every row is positioned explicitly,
@@ -136,27 +142,96 @@ pub const CursorShape = enum {
 /// Draws the visible lines of the buffer, with `~` past the end of the text,
 /// a status bar in the bottom row, and the cursor.
 pub fn draw(w: *std.Io.Writer, size: Size, view: View) !void {
-    try w.writeAll(sync_begin ++ hide_cursor);
-    defer w.writeAll(sync_end) catch {};
+    return drawFrame(w, size, view, null);
+}
+
+/// What was last drawn on the terminal, segment by segment (see the top of
+/// this file).
+pub const Frame = struct {
+    gpa: std.mem.Allocator,
+    segments: std.ArrayList(std.ArrayList(u8)) = .empty,
+    /// The size they were drawn at.
+    size: Size = .{ .rows = 0, .cols = 0 },
+    scratch: std.Io.Writer.Allocating,
+
+    pub fn init(gpa: std.mem.Allocator) Frame {
+        return .{ .gpa = gpa, .scratch = .init(gpa) };
+    }
+
+    pub fn deinit(f: *Frame) void {
+        for (f.segments.items) |*seg| seg.deinit(f.gpa);
+        f.segments.deinit(f.gpa);
+        f.scratch.deinit();
+    }
+
+    /// Forgets what's on the screen, so the next draw redraws all of it:
+    /// after anything else may have drawn there.
+    pub fn invalidate(f: *Frame) void {
+        for (f.segments.items) |*seg| seg.clearRetainingCapacity();
+    }
+
+    fn fit(f: *Frame, size: Size, count: usize) !void {
+        if (f.size.rows != size.rows or f.size.cols != size.cols) f.invalidate();
+        f.size = size;
+        while (f.segments.items.len < count) try f.segments.append(f.gpa, .empty);
+    }
+};
+
+/// Where a frame's segments go: straight out, or through a `Frame` that
+/// sends only those that changed.
+const Segments = struct {
+    out: *std.Io.Writer,
+    frame: ?*Frame,
+
+    fn begin(s: *Segments) *std.Io.Writer {
+        const f = s.frame orelse return s.out;
+        f.scratch.clearRetainingCapacity();
+        return &f.scratch.writer;
+    }
+
+    fn end(s: *Segments, index: usize) !void {
+        const f = s.frame orelse return;
+        const now = f.scratch.written();
+        const last = &f.segments.items[index];
+        if (std.mem.eql(u8, last.items, now)) return;
+        try s.out.writeAll(now);
+        last.clearRetainingCapacity();
+        try last.appendSlice(f.gpa, now);
+    }
+};
+
+/// `draw`, sending only what differs from `frame` when there is one.
+pub fn drawFrame(out: *std.Io.Writer, size: Size, view: View, frame: ?*Frame) !void {
+    try out.writeAll(sync_begin ++ hide_cursor);
+    defer out.writeAll(sync_end) catch {};
 
     const cols: usize = size.cols;
     const lines = view.buffer.visibleLineCount();
     const gutter = textGutter(size, view.numbers, lines);
+    const rows = textRows(size);
+    // Per row: its line number, then its text; then the bottom row.
+    if (frame) |f| try f.fit(size, 2 * rows + 1);
+    var segs: Segments = .{ .out = out, .frame = frame };
 
-    for (0..textRows(size)) |r| {
-        try w.print("\x1b[{d};1H", .{r + 1});
+    for (0..rows) |r| {
         const line = view.top + r;
+        var w = segs.begin();
+        if (line < lines and gutter > 0) {
+            const here = line == view.cursor.line;
+            const number = if (view.numbers == .absolute or here)
+                line + 1
+            else if (line > view.cursor.line) line - view.cursor.line else view.cursor.line - line;
+            try w.print("\x1b[{d};1H", .{r + 1});
+            if (!here) try w.writeAll(dim);
+            try w.print("{d: >[1]} ", .{ number, gutter - 1 });
+            if (!here) try w.writeAll(reset);
+        }
+        try segs.end(2 * r);
+
+        w = segs.begin();
         var used: usize = 0;
         if (line < lines) {
-            if (gutter > 0) {
-                const here = line == view.cursor.line;
-                const number = if (view.numbers == .absolute or here)
-                    line + 1
-                else if (line > view.cursor.line) line - view.cursor.line else view.cursor.line - line;
-                if (!here) try w.writeAll(dim);
-                try w.print("{d: >[1]} ", .{ number, gutter - 1 });
-                if (!here) try w.writeAll(reset);
-            }
+            try w.print("\x1b[{d};{d}H", .{ r + 1, gutter + 1 });
             var chars = lineChars(view.buffer, line);
             const hl: Highlight = if (view.selection) |sel| sel.highlight(line) else .{};
             const shaded = view.cursorline and line == view.cursor.line;
@@ -166,14 +241,19 @@ pub fn draw(w: *std.Io.Writer, size: Size, view: View) !void {
                 try w.writeAll(cursorline_bg ++ "\x1b[K" ++ reset);
                 used = cols;
             }
-        } else if (cols > 0) {
-            try w.writeAll("~");
-            used = 1;
+        } else {
+            try w.print("\x1b[{d};1H", .{r + 1});
+            if (cols > 0) {
+                try w.writeAll("~");
+                used = 1;
+            }
         }
         if (used < cols) try w.writeAll("\x1b[K");
+        try segs.end(2 * r + 1);
     }
 
     if (size.rows >= 2) {
+        const w = segs.begin();
         try w.print("\x1b[{d};1H", .{size.rows});
         if (view.command) |command| {
             // ':' and the text, scrolled so the cursor after them stays visible.
@@ -185,9 +265,10 @@ pub fn draw(w: *std.Io.Writer, size: Size, view: View) !void {
             chars = .{ .bytes = command };
             const used = colon + try drawChars(w, &chars, hidden -| 1, cols - colon);
             if (used < cols) try w.writeAll("\x1b[K");
-            try w.print("\x1b[{d};{d}H", .{ size.rows, width - hidden + 1 });
-            try w.writeAll(CursorShape.bar.sequence());
-            try w.writeAll(show_cursor);
+            try segs.end(2 * rows);
+            try out.print("\x1b[{d};{d}H", .{ size.rows, width - hidden + 1 });
+            try out.writeAll(CursorShape.bar.sequence());
+            try out.writeAll(show_cursor);
             return;
         } else if (view.message) |message| {
             var chars: SliceChars = .{ .bytes = message.text };
@@ -198,16 +279,17 @@ pub fn draw(w: *std.Io.Writer, size: Size, view: View) !void {
         } else {
             try drawStatus(w, size, view);
         }
+        try segs.end(2 * rows);
     }
 
     // Show the cursor only when it is on screen.
     const c = view.cursor;
-    if (c.line >= view.top and c.line - view.top < textRows(size) and
+    if (c.line >= view.top and c.line - view.top < rows and
         c.col >= view.left and c.col - view.left < cols - gutter)
     {
-        try w.print("\x1b[{d};{d}H", .{ c.line - view.top + 1, gutter + c.col - view.left + 1 });
-        try w.writeAll(view.cursor_shape.sequence());
-        try w.writeAll(show_cursor);
+        try out.print("\x1b[{d};{d}H", .{ c.line - view.top + 1, gutter + c.col - view.left + 1 });
+        try out.writeAll(view.cursor_shape.sequence());
+        try out.writeAll(show_cursor);
     }
 }
 
@@ -834,4 +916,59 @@ test "tiny viewport stays valid" {
     var w: std.Io.Writer = .fixed(&buf);
     try draw(&w, .{ .rows = 1, .cols = 1 }, .{ .buffer = &b, .name = "", .top = 0 });
     try testing.expect(std.mem.endsWith(u8, w.buffered(), sync_end));
+}
+
+test "drawing only what changed leaves the same screen as drawing it all" {
+    var b: Buffer = try .init(testing.allocator, "one\ntwo two\nthree\n\tfour\nfive 中文\nsix\nseven\neight\n");
+    defer b.deinit();
+    var frame: Frame = .init(testing.allocator);
+    defer frame.deinit();
+    const size: Size = .{ .rows = 6, .cols = 20 };
+    const S = struct {
+        var all: [64 * 1024]u8 = undefined;
+        var one: [16 * 1024]u8 = undefined;
+    };
+    var all: std.Io.Writer = .fixed(&S.all); // every diff, one after another
+
+    const views = [_]View{
+        .{ .buffer = &b, .name = "f", .top = 0, .numbers = .relative, .cursorline = true },
+        .{ .buffer = &b, .name = "f", .top = 0, .numbers = .relative, .cursorline = true, .cursor = .{ .line = 1, .col = 2 } },
+        .{ .buffer = &b, .name = "f", .top = 2, .numbers = .relative, .cursorline = true, .cursor = .{ .line = 4 }, .modified = true },
+        .{ .buffer = &b, .name = "f", .top = 2, .numbers = .absolute, .cursor = .{ .line = 4 }, .command = "w" },
+        .{ .buffer = &b, .name = "f", .top = 3, .cursor = .{ .line = 3 }, .message = .{ .text = "hi", .is_error = true } },
+        .{ .buffer = &b, .name = "f", .top = 3, .left = 2, .cursor = .{ .line = 3, .col = 4 }, .selection = .{ .kind = .char, .first_line = 3, .last_line = 4, .start_col = 1, .end_col = 3 } },
+        .{ .buffer = &b, .name = "f", .top = 0, .numbers = .relative, .cursorline = true },
+    };
+    for (views) |view| try drawFrame(&all, size, view, &frame);
+    // An edit between frames too.
+    try b.insert(0, "zero\n");
+    try drawFrame(&all, size, views[0], &frame);
+
+    var full: std.Io.Writer = .fixed(&S.one);
+    try draw(&full, size, views[0]);
+    const want = try renderToGrid(full.buffered(), 6, 20, &text.width);
+    const got = try renderToGrid(all.buffered(), 6, 20, &text.width);
+    for (want, got) |w_row, g_row| try testing.expectEqualSlices(u21, &w_row, &g_row);
+}
+
+test "moving the cursor along a line sends a few bytes, not the screen" {
+    var b: Buffer = try .init(testing.allocator, "some text on a line\nmore text\n");
+    defer b.deinit();
+    var frame: Frame = .init(testing.allocator);
+    defer frame.deinit();
+    var buf: [16 * 1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const size: Size = .{ .rows = 30, .cols = 100 };
+    try drawFrame(&w, size, .{ .buffer = &b, .name = "f", .top = 0 }, &frame);
+    const first = w.buffered().len;
+    w = .fixed(&buf);
+    try drawFrame(&w, size, .{ .buffer = &b, .name = "f", .top = 0, .cursor = .{ .col = 1 } }, &frame);
+    // The status bar's Col changes, and the cursor moves.
+    try testing.expect(w.buffered().len < first / 2);
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "some text") == null);
+
+    frame.invalidate();
+    w = .fixed(&buf);
+    try drawFrame(&w, size, .{ .buffer = &b, .name = "f", .top = 0, .cursor = .{ .col = 1 } }, &frame);
+    try testing.expectEqual(first, w.buffered().len); // all of it again
 }

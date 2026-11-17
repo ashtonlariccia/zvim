@@ -147,6 +147,9 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
     const out = &out_file.interface;
 
     var size = Terminal.size();
+    // What's on the screen, so each frame sends only what changed.
+    var frame: ui.Frame = .init(init.gpa);
+    defer frame.deinit();
     var in_buf: [4096]u8 = undefined;
     // Bytes of a key that may still be arriving (see `Decoder.final`) wait
     // at the start of `in_buf` for the rest, for up to `key_wait_ms`.
@@ -185,7 +188,11 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
             .start_col = sel.start_col,
             .end_col = sel.end_col,
         } else null;
-        try ui.draw(out, size, .{
+        if (editor.redraw_requested) {
+            editor.redraw_requested = false;
+            frame.invalidate();
+        }
+        try ui.drawFrame(out, size, .{
             .buffer = &editor.buffer,
             .name = editor.name.items,
             .top = editor.top,
@@ -209,7 +216,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
                 .{ .text = editor.message.text(), .is_error = editor.message.is_error }
             else
                 null,
-        });
+        }, &frame);
         try out.flush();
 
         const now = std.Io.Timestamp.now(init.io, .awake).toMilliseconds();
@@ -224,6 +231,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
         var input: []const u8, var final = switch (event) {
             .resize => {
                 size = Terminal.size();
+                frame.invalidate(); // terminals may reflow or clear on resize
                 continue;
             },
             .hangup => return .hangup,
@@ -276,6 +284,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
                     .@"suspend" => {
                         term.suspendProcess();
                         size = Terminal.size();
+                        frame.invalidate();
                     },
                     .write => |write| {
                         // Don't silently overwrite changes made by something else.
