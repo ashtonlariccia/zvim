@@ -10,7 +10,7 @@ pub const Settings = struct {
     /// New lines start with the indentation of the line above.
     autoindent: bool = true,
     /// Tab and > insert spaces rather than a tab.
-    expandtab: bool = false,
+    expandtab: bool = true,
     /// How wide a tab is on screen; drawing reads it as `text.tab_width`.
     tabstop: usize = 4,
     /// How many spaces, with `expandtab`.

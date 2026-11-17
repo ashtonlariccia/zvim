@@ -5,8 +5,13 @@ const testing = std.testing;
 const Editor = @import("../Editor.zig");
 const Decoder = @import("../keys.zig").Decoder;
 
+/// An editor with tabs and no autoclose, whatever the defaults are, so
+/// tests don't change with them; tests of those settings turn them on.
 pub fn testEditor(content: []const u8) !Editor {
-    return .init(testing.allocator, try .init(testing.allocator, content), "");
+    var e: Editor = try .init(testing.allocator, try .init(testing.allocator, content), "");
+    e.settings.expandtab = false;
+    e.settings.autoclose = false;
+    return e;
 }
 
 pub fn typeKeys(e: *Editor, input: []const u8) !void {
