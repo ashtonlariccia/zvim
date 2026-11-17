@@ -218,6 +218,34 @@ pub const ChunkIterator = struct {
     }
 };
 
+/// Iterates backwards over the text before byte offset `pos`, as
+/// contiguous byte slices, last first.
+pub fn chunksBefore(self: *const Buffer, pos: usize) ReverseChunkIterator {
+    assert(pos <= self.len);
+    const loc = self.locate(pos);
+    // The piece holding `pos` contributes the part before it, if any.
+    return if (loc.offset > 0)
+        .{ .buffer = self, .index = loc.index + 1, .end = loc.offset }
+    else
+        .{ .buffer = self, .index = loc.index, .end = null };
+}
+
+pub const ReverseChunkIterator = struct {
+    buffer: *const Buffer,
+    /// One past the piece to return next.
+    index: usize,
+    /// How much of that piece to return; null for all of it.
+    end: ?usize,
+
+    pub fn next(it: *ReverseChunkIterator) ?[]const u8 {
+        if (it.index == 0) return null;
+        it.index -= 1;
+        const bytes = it.buffer.pieceBytes(it.buffer.pieces.items[it.index]);
+        defer it.end = null;
+        return bytes[0 .. it.end orelse bytes.len];
+    }
+};
+
 /// Copies `out.len` bytes starting at byte offset `pos` into `out`.
 pub fn read(self: *const Buffer, pos: usize, out: []u8) void {
     assert(pos + out.len <= self.len);

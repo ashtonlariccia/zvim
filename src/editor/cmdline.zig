@@ -6,7 +6,7 @@ const Key = @import("../keys.zig").Key;
 const text = @import("../text.zig");
 const normal = @import("normal.zig");
 const motions = @import("motions.zig");
-const settings = @import("settings.zig");
+const Buffer = @import("../Buffer.zig");
 
 const no_file_name = "E32: No file name";
 const unsaved_changes = "E37: No write since last change (add ! to override)";
@@ -142,29 +142,33 @@ pub fn runSearch(ed: *Editor) !void {
 /// capital.
 pub fn search(ed: *Editor, from: usize, forward: bool, count: usize) !?usize {
     const pattern = ed.last_search.items;
-    const all = try ed.buffer.toOwnedSlice(ed.gpa);
-    defer ed.gpa.free(all);
     const has_capital = for (pattern) |c| {
         if (std.ascii.isUpper(c)) break true;
     } else false;
-    const fold = ed.settings.ignorecase and !(ed.settings.smartcase and has_capital);
+    const s: Searcher = .{
+        .buffer = &ed.buffer,
+        .pattern = pattern,
+        .fold = ed.settings.ignorecase and !(ed.settings.smartcase and has_capital),
+        .gpa = ed.gpa,
+    };
     var pos = from;
-    for (0..count) |_| pos = searchOnce(ed, all, pattern, fold, pos, forward) orelse return null;
+    for (0..count) |_| pos = try searchOnce(ed, s, pos, forward) orelse return null;
     return pos;
 }
 
-fn searchOnce(ed: *Editor, all: []const u8, pattern: []const u8, fold: bool, from: usize, forward: bool) ?usize {
+fn searchOnce(ed: *Editor, s: Searcher, from: usize, forward: bool) !?usize {
+    const len = s.buffer.len;
     if (forward) {
-        if (from + 1 <= all.len) {
-            if (indexOfPos(all, from + 1, pattern, fold)) |i| return i;
+        if (from + 1 <= len) {
+            if (try s.first(from + 1)) |i| return i;
         }
-        if (indexOfPos(all, 0, pattern, fold)) |i| {
+        if (try s.first(0)) |i| {
             ed.setMessage(true, "search hit BOTTOM, continuing at TOP", .{});
             return i;
         }
     } else {
-        if (lastIndexBefore(all, from, pattern, fold)) |i| return i;
-        if (lastIndexBefore(all, all.len + 1, pattern, fold)) |i| {
+        if (try s.last(from)) |i| return i;
+        if (try s.last(len + 1)) |i| {
             ed.setMessage(true, "search hit TOP, continuing at BOTTOM", .{});
             return i;
         }
@@ -172,26 +176,95 @@ fn searchOnce(ed: *Editor, all: []const u8, pattern: []const u8, fold: bool, fro
     return null;
 }
 
-fn indexOfPos(all: []const u8, start: usize, pattern: []const u8, fold: bool) ?usize {
-    if (!fold) return std.mem.indexOfPos(u8, all, start, pattern);
-    if (pattern.len > all.len) return null;
-    for (start..all.len - pattern.len + 1) |i| {
-        if (std.ascii.startsWithIgnoreCase(all[i..], pattern)) return i;
+/// Plain-text search straight over the buffer's pieces, without copying the
+/// text: each piece is searched in place, and a match that crosses from one
+/// piece into the next is found in a small seam of the bytes either side.
+const Searcher = struct {
+    buffer: *const Buffer,
+    pattern: []const u8,
+    /// ASCII letters match in either case.
+    fold: bool,
+    gpa: std.mem.Allocator,
+
+    /// The first match starting at or after `start`.
+    fn first(s: Searcher, start: usize) !?usize {
+        const m = s.pattern.len;
+        // The last m-1 bytes before the current chunk, then the first m-1 of it.
+        const seam = try s.gpa.alloc(u8, 2 * (m - 1));
+        defer s.gpa.free(seam);
+        var carry: usize = 0;
+        var it = s.buffer.chunksFrom(start);
+        var at = start; // offset of the current chunk
+        while (it.next()) |chunk| : (at += chunk.len) {
+            if (carry > 0) {
+                const head = @min(chunk.len, m - 1);
+                @memcpy(seam[carry..][0..head], chunk[0..head]);
+                if (find(seam[0 .. carry + head], s.pattern, s.fold)) |i| return at - carry + i;
+            }
+            if (find(chunk, s.pattern, s.fold)) |i| return at + i;
+            // Keep the last m-1 bytes seen, for the next seam.
+            const keep = @min(m - 1, carry + chunk.len);
+            const from_chunk = @min(keep, chunk.len);
+            std.mem.copyForwards(u8, seam[0 .. keep - from_chunk], seam[carry - (keep - from_chunk) .. carry]);
+            @memcpy(seam[keep - from_chunk .. keep], chunk[chunk.len - from_chunk ..]);
+            carry = keep;
+        }
+        return null;
+    }
+
+    /// The last match starting before `end`.
+    fn last(s: Searcher, end: usize) !?usize {
+        if (end == 0) return null;
+        const m = s.pattern.len;
+        // A match starting before `end` ends within this much of the text.
+        const reach = @min(end - 1 + m, s.buffer.len);
+        // The last m-1 bytes of the current chunk, then the first m-1 after it.
+        const seam = try s.gpa.alloc(u8, 2 * (m - 1));
+        defer s.gpa.free(seam);
+        var carry: usize = 0;
+        var it = s.buffer.chunksBefore(reach);
+        var at = reach; // offset just past the current chunk
+        while (it.next()) |chunk| {
+            at -= chunk.len;
+            const tail = @min(chunk.len, m - 1);
+            std.mem.copyBackwards(u8, seam[tail..][0..carry], seam[0..carry]);
+            @memcpy(seam[0..tail], chunk[chunk.len - tail ..]);
+            var best: ?usize = null;
+            if (carry > 0) {
+                if (findLast(seam[0 .. tail + carry], s.pattern, s.fold)) |i| best = at + chunk.len - tail + i;
+            }
+            if (findLast(chunk, s.pattern, s.fold)) |i| best = @max(best orelse 0, at + i);
+            if (best) |b| return b;
+            // Keep the first m-1 bytes from this chunk on, for the next seam.
+            // A short chunk is already all in front of what came after it.
+            if (chunk.len >= m - 1) @memcpy(seam[0 .. m - 1], chunk[0 .. m - 1]);
+            carry = @min(m - 1, tail + carry);
+        }
+        return null;
+    }
+};
+
+/// The first `needle` in `hay`.
+fn find(hay: []const u8, needle: []const u8, fold: bool) ?usize {
+    if (!fold) return std.mem.indexOf(u8, hay, needle);
+    if (needle.len > hay.len) return null;
+    const firsts = [2]u8{ std.ascii.toLower(needle[0]), std.ascii.toUpper(needle[0]) };
+    var i: usize = 0;
+    // Jump between bytes that could start a match, then compare the rest.
+    while (std.mem.indexOfAnyPos(u8, hay[0 .. hay.len - needle.len + 1], i, &firsts)) |at| : (i = at + 1) {
+        if (std.ascii.eqlIgnoreCase(hay[at..][0..needle.len], needle)) return at;
     }
     return null;
 }
 
-/// The last match that starts before `end`.
-fn lastIndexBefore(all: []const u8, end: usize, pattern: []const u8, fold: bool) ?usize {
-    if (end == 0) return null;
-    // A match starting before `end` ends within this much of the text.
-    const reach = all[0..@min(end - 1 + pattern.len, all.len)];
-    if (!fold) return std.mem.lastIndexOf(u8, reach, pattern);
-    if (pattern.len > reach.len) return null;
-    var i = reach.len - pattern.len + 1;
-    while (i > 0) {
-        i -= 1;
-        if (std.ascii.eqlIgnoreCase(reach[i..][0..pattern.len], pattern)) return i;
+/// The last `needle` in `hay`.
+fn findLast(hay: []const u8, needle: []const u8, fold: bool) ?usize {
+    if (!fold) return std.mem.lastIndexOf(u8, hay, needle);
+    if (needle.len > hay.len) return null;
+    const firsts = [2]u8{ std.ascii.toLower(needle[0]), std.ascii.toUpper(needle[0]) };
+    var end = hay.len - needle.len + 1;
+    while (std.mem.lastIndexOfAny(u8, hay[0..end], &firsts)) |at| : (end = at) {
+        if (std.ascii.eqlIgnoreCase(hay[at..][0..needle.len], needle)) return at;
     }
     return null;
 }
@@ -366,4 +439,44 @@ test "the first change to a read-only file warns once" {
     try testing.expectEqualStrings("W10: Warning: Changing a readonly file", e.message.text());
     try typeKeys(&e, "x");
     try testing.expectEqual(@as(usize, 0), e.message.len);
+}
+
+test "search across pieces finds what a search of the copied text finds" {
+    var prng: std.Random.DefaultPrng = .init(7);
+    const rand = prng.random();
+    for (0..200) |_| {
+        // Text of a, b and A, built from many small inserts so matches cross pieces.
+        var b: Buffer = try .init(testing.allocator, "abAb");
+        defer b.deinit();
+        for (0..rand.intRangeAtMost(usize, 0, 30)) |_| {
+            var piece: [4]u8 = undefined;
+            const n = rand.intRangeAtMost(usize, 1, piece.len);
+            for (piece[0..n]) |*c| c.* = "abA"[rand.uintLessThan(usize, 3)];
+            try b.insert(rand.uintAtMost(usize, b.len), piece[0..n]);
+        }
+        const all = try b.toOwnedSlice(testing.allocator);
+        defer testing.allocator.free(all);
+
+        var pattern: [5]u8 = undefined;
+        const m = rand.intRangeAtMost(usize, 1, pattern.len);
+        for (pattern[0..m]) |*c| c.* = "abA"[rand.uintLessThan(usize, 3)];
+        for ([_]bool{ false, true }) |fold| {
+            const s: Searcher = .{ .buffer = &b, .pattern = pattern[0..m], .fold = fold, .gpa = testing.allocator };
+            for (0..all.len + 2) |pos| {
+                const want_first: ?usize = if (pos > all.len) null else for (pos..all.len + 1) |i| {
+                    if (i + m <= all.len and matches(all[i..][0..m], pattern[0..m], fold)) break i;
+                } else null;
+                if (pos <= all.len) try testing.expectEqual(want_first, try s.first(pos));
+                var want_last: ?usize = null;
+                for (0..@min(pos, all.len + 1)) |i| {
+                    if (i + m <= all.len and matches(all[i..][0..m], pattern[0..m], fold)) want_last = i;
+                }
+                try testing.expectEqual(want_last, try s.last(pos));
+            }
+        }
+    }
+}
+
+fn matches(a: []const u8, b: []const u8, fold: bool) bool {
+    return if (fold) std.ascii.eqlIgnoreCase(a, b) else std.mem.eql(u8, a, b);
 }
