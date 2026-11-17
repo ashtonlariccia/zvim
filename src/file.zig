@@ -86,7 +86,21 @@ pub fn save(buffer: *const Buffer, io: Io, dir: Io.Dir, path: []const u8, crlf: 
         }
     }
     try fw.interface.flush();
+    // On disk before the rename, so a crash or power loss right after a
+    // save can't leave an empty or half-written file in its place.
+    try atomic.file.sync(io);
     try atomic.replace(io);
+    syncDir(io, dir, target);
+}
+
+/// Flushes the directory holding `path` to disk, so the rename that
+/// replaced the file is kept too. Best effort: some filesystems refuse.
+fn syncDir(io: Io, dir: Io.Dir, path: []const u8) void {
+    // .iterate: a real descriptor, not O_PATH, which fsync refuses.
+    var parent = dir.openDir(io, std.fs.path.dirname(path) orelse ".", .{ .iterate = true }) catch return;
+    defer parent.close(io);
+    const handle: Io.File = .{ .handle = parent.handle, .flags = .{ .nonblocking = false } };
+    handle.sync(io) catch {};
 }
 
 const testing = std.testing;
