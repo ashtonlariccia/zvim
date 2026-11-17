@@ -65,6 +65,37 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
+/// Reads the file at `path` back in, replacing the buffer.
+fn reload(io: std.Io, editor: *Editor, path: []const u8, disk: *?DiskStamp) !void {
+    const fresh = file.load(editor.gpa, io, .cwd(), path) catch |err| {
+        editor.setMessage(true, "E484: Can't read {s}: {s}", .{ path, @errorName(err) });
+        return;
+    };
+    try editor.reloaded(fresh.buffer);
+    disk.* = DiskStamp.of(io, path);
+    editor.crlf = fresh.crlf;
+    editor.readonly = isReadOnly(io, path);
+}
+
+/// On getting the focus back: if something else changed the file, reload
+/// it when there's nothing unsaved to lose, or warn once when there is.
+fn checkDisk(io: std.Io, editor: *Editor, disk: *?DiskStamp, warned: *?DiskStamp) !void {
+    const path = editor.name.items;
+    if (path.len == 0 or disk.* == null) return;
+    const now = DiskStamp.of(io, path);
+    if (DiskStamp.eql(disk.*, now) or DiskStamp.eql(warned.*, now)) return;
+    if (now == null) {
+        editor.setMessage(true, "W13: {s} was deleted on disk (:w to write it again)", .{path});
+    } else if (editor.isModified()) {
+        editor.setMessage(true, "W12: {s} changed on disk, and you have unsaved changes (:e! to reload, :w! to overwrite)", .{path});
+    } else {
+        try reload(io, editor, path, disk);
+        editor.setMessage(false, "\"{s}\" changed on disk: reloaded", .{path});
+        return;
+    }
+    warned.* = now;
+}
+
 /// Whether `path` exists but can't be written by this user.
 fn isReadOnly(io: std.Io, path: []const u8) bool {
     if (path.len == 0) return false;
@@ -123,6 +154,9 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
     // The terminal speaks the kitty keyboard protocol: Escape comes as a
     // sequence, so a lone escape byte is always the start of one.
     var keyboard_protocol = false;
+    // The disk version last warned about, so the warning isn't repeated
+    // each time the window gets the focus.
+    var warned: ?DiskStamp = null;
     // When the message in the bottom row gives way to the status bar again.
     var message_until = messageDeadline(init.io, editor);
     while (true) {
@@ -193,6 +227,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
             } else .{ in_buf[0..pending], true },
             .input => |bytes| .{ in_buf[0 .. pending + bytes.len], false },
         };
+        var focus_in = false;
         while (true) {
             var keys: Decoder = .{ .bytes = input, .in_paste = in_paste, .final = final };
             while (keys.next()) |key| {
@@ -202,16 +237,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
                 switch (try editor.handleKey(key)) {
                     .none => {},
                     .quit => return .quit,
-                    .reload => |reload_path| {
-                        const fresh = file.load(init.gpa, init.io, .cwd(), reload_path) catch |err| {
-                            editor.setMessage(true, "E484: Can't read {s}: {s}", .{ reload_path, @errorName(err) });
-                            continue;
-                        };
-                        try editor.reloaded(fresh.buffer);
-                        disk = DiskStamp.of(init.io, reload_path);
-                        editor.crlf = fresh.crlf;
-                        editor.readonly = isReadOnly(init.io, reload_path);
-                    },
+                    .reload => |reload_path| try reload(init.io, editor, reload_path, &disk),
                     .@"suspend" => {
                         term.suspendProcess();
                         size = Terminal.size();
@@ -237,6 +263,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
             }
             in_paste = keys.in_paste;
             keyboard_protocol = keyboard_protocol or keys.keyboard_protocol;
+            focus_in = focus_in or keys.focus_in;
             const left = keys.leftover();
             // Something that long isn't a key on its way: decode it as is.
             if (left.len > 32 and !final) {
@@ -248,6 +275,7 @@ fn run(init: std.process.Init, editor: *Editor) !enum { quit, hangup } {
             pending = left.len;
             break;
         }
+        if (focus_in) try checkDisk(init.io, editor, &disk, &warned);
         // Each key clears the message; one there now is new.
         message_until = messageDeadline(init.io, editor);
     }
@@ -275,8 +303,9 @@ fn writeUsage(w: *std.Io.Writer) !void {
         \\  Recovery      after a crash or a lost connection, unsaved text is in
         \\                file.zvim-recover next to the file (or in /tmp)
         \\  Read-only     [RO] in the status bar; :w is refused, :w! overwrites
-        \\  Changed file  :w is refused if the file changed on disk since it was
-        \\                read; :w! overwrites, :e! reloads
+        \\  Changed file  on getting the focus back, a file changed on disk is
+        \\                reloaded, or with unsaved changes, you're warned; :w
+        \\                is refused then: :w! overwrites, :e! reloads
         \\  Line endings  Windows (CRLF) files stay that way: [CRLF]
         \\
         \\DIFFERENT FROM VIM

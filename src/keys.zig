@@ -42,6 +42,9 @@ pub const Decoder = struct {
     /// Set on seeing the terminal's answer to the keyboard protocol query:
     /// it's on, so Escape never comes as a lone escape byte.
     keyboard_protocol: bool = false,
+    /// Set when the terminal says its window got the focus back (`CSI I`,
+    /// with focus reporting on; see term.zig). Losing it (`CSI O`) is ignored.
+    focus_in: bool = false,
     /// Inside a bracketed paste. Carry it over from one read to the next,
     /// since a long paste can span several.
     in_paste: bool = false,
@@ -92,6 +95,10 @@ pub const Decoder = struct {
                     if (isSequenceStart(rest)) {
                         const seq = sequenceLen(rest);
                         d.i += seq;
+                        if (std.mem.eql(u8, rest[0..seq], "\x1b[I")) {
+                            d.focus_in = true;
+                            continue;
+                        }
                         if (isProtocolReply(rest[0..seq])) {
                             d.keyboard_protocol = true;
                             continue;
@@ -282,6 +289,12 @@ test "the keyboard protocol reply is noted, not typed" {
     var d: Decoder = .{ .bytes = "\x1b[?1uj" };
     try testing.expectEqual(Key{ .char = 'j' }, d.next().?);
     try testing.expect(d.keyboard_protocol);
+}
+
+test "focus reports are noted, not typed" {
+    var d: Decoder = .{ .bytes = "\x1b[O\x1b[Ij" };
+    try testing.expectEqual(Key{ .char = 'j' }, d.next().?);
+    try testing.expect(d.focus_in);
 }
 
 test "bracketed paste comes through as literal text" {

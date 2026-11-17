@@ -22,14 +22,14 @@ pub const Event = union(enum) {
 const stdin = posix.STDIN_FILENO;
 const stdout = posix.STDOUT_FILENO;
 
-// Alternate screen, hide cursor, bracketed paste, then the kitty keyboard
+// Alternate screen, hide cursor, bracketed paste, focus reports, then the kitty keyboard
 // protocol's first level (Escape, Ctrl-x and Alt-x as unambiguous CSI u
 // sequences) and a query whose answer says the terminal turned it on.
 // Terminals without it ignore both.
-const enter_seq = "\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[>1u\x1b[?u";
-// The reverse: keyboard protocol off, no bracketed paste, default cursor
+const enter_seq = "\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1004h\x1b[>1u\x1b[?u";
+// The reverse: keyboard protocol off, no focus reports or bracketed paste, default cursor
 // shape, show cursor, main screen.
-const leave_seq = "\x1b[<u\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1049l";
+const leave_seq = "\x1b[<u\x1b[?1004l\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1049l";
 
 /// Self-pipe: signal handlers write a byte here so poll() wakes up. 'w' for
 /// a resize, 'q' for a hangup or termination.
